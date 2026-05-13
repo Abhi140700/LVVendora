@@ -1,0 +1,45 @@
+{
+  "name": "admin",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "vite --host 0.0.0.0",
+    "build": "vite build",
+    "preview": "vite preview --host 0.0.0.0",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "@reduxjs/toolkit": "^2.11.2",
+    "@tanstack/react-table": "^8.21.3",
+    "@vitejs/plugin-react": "^5.0.4",
+    "apexcharts": "^5.10.6",
+    "axios": "^1.13.6",
+    "bootstrap": "^5.3.8",
+    "dayjs": "^1.11.20",
+    "jsbarcode": "^3.12.3",
+    "jspdf": "^4.2.1",
+    "jspdf-autotable": "^5.0.7",
+    "qrcode.react": "^4.2.0",
+    "react": "^19.1.1",
+    "react-dom": "^19.1.1",
+    "react-hook-form": "^7.71.2",
+    "react-hot-toast": "^2.6.0",
+    "react-qr-code": "^2.0.18",
+    "react-redux": "^9.2.0",
+    "react-router-dom": "^7.13.1",
+    "recharts": "^3.8.0",
+    "redux": "^5.0.1",
+    "vite": "^7.1.12"
+  },
+  "devDependencies": {
+    "@eslint/js": "^9.39.4",
+    "@types/react": "^19.2.14",
+    "@types/react-dom": "^19.2.3",
+    "eslint": "^9.39.4",
+    "eslint-plugin-react-hooks": "^7.0.1",
+    "eslint-plugin-react-refresh": "^0.5.2",
+    "globals": "^17.4.0",
+    "vitest": "^3.2.4"
+  }
+}

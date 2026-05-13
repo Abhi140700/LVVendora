@@ -1,0 +1,99 @@
+:root {
+  --app-primary: #696cff;
+  --app-primary-rgb: 105, 108, 255;
+  --app-bg: #f5f5f9;
+  --app-card-bg: #ffffff;
+  --app-text: #566a7f;
+  --app-heading: #384551;
+  --app-muted: #a1acb8;
+  --app-border: #d9dee3;
+  --app-sidebar-bg: #ffffff;
+  --app-navbar-bg: #ffffff;
+  --app-shadow: 0 0.25rem 1rem rgba(67, 89, 113, 0.12);
+  --card-shadow: 0 0.25rem 1rem rgba(67, 89, 113, 0.1);
+  --card-shadow-hover: 0 0.7rem 1.55rem rgba(67, 89, 113, 0.14);
+  --field-shadow: 0 0.125rem 0.45rem rgba(67, 89, 113, 0.08);
+  --focus-ring: 0 0 0 0.18rem rgba(var(--app-primary-rgb), 0.12);
+  --app-radius: 0.5rem;
+  --app-radius-sm: 0.375rem;
+  --app-line-soft: rgba(217, 222, 227, 0.72);
+  --app-surface-soft: #fafbfc;
+}
+
+:root[data-palette="lime"] {
+  --app-bg: #f4f8ed;
+  --bg-color: #f4f8ed;
+  --scrollbar-track: #f4f8ed;
+  --app-surface-soft: #f9fbf4;
+}
+
+:root[data-palette="sky"] {
+  --app-bg: #eef7ff;
+  --bg-color: #eef7ff;
+  --scrollbar-track: #eef7ff;
+  --app-surface-soft: #f6fbff;
+}
+
+:root[data-palette="coral"] {
+  --app-bg: #fff3ed;
+  --bg-color: #fff3ed;
+  --scrollbar-track: #fff3ed;
+  --app-surface-soft: #fff8f4;
+}
+
+:root[data-palette="violet"] {
+  --app-bg: #f4f0ff;
+  --bg-color: #f4f0ff;
+  --scrollbar-track: #f4f0ff;
+  --app-surface-soft: #faf8ff;
+}
+
+[data-bs-theme="dark"] {
+  --app-bg: #232333;
+  --app-card-bg: #2b2c40;
+  --app-text: #b6bee3;
+  --app-heading: #d5d8ff;
+  --app-muted: #7983bb;
+  --app-border: #444564;
+  --app-sidebar-bg: #2b2c40;
+  --app-navbar-bg: #2b2c40;
+  --app-shadow: 0 0.25rem 1rem rgba(0, 0, 0, 0.25);
+  --card-shadow: 0 0.25rem 1rem rgba(0, 0, 0, 0.24);
+  --card-shadow-hover: 0 0.7rem 1.55rem rgba(0, 0, 0, 0.3);
+  --field-shadow: 0 0.125rem 0.45rem rgba(0, 0, 0, 0.18);
+  --focus-ring: 0 0 0 0.18rem rgba(var(--app-primary-rgb), 0.18);
+  --app-line-soft: rgba(68, 69, 100, 0.72);
+  --app-surface-soft: #303149;
+}
+
+:root[data-theme="dark"][data-palette="lime"],
+:root[data-bs-theme="dark"][data-palette="lime"] {
+  --app-bg: #20281f;
+  --bg-color: #20281f;
+  --scrollbar-track: #20281f;
+  --app-surface-soft: #273125;
+}
+
+:root[data-theme="dark"][data-palette="sky"],
+:root[data-bs-theme="dark"][data-palette="sky"] {
+  --app-bg: #1d2833;
+  --bg-color: #1d2833;
+  --scrollbar-track: #1d2833;
+  --app-surface-soft: #243241;
+}
+
+:root[data-theme="dark"][data-palette="coral"],
+:root[data-bs-theme="dark"][data-palette="coral"] {
+  --app-bg: #31231f;
+  --bg-color: #31231f;
+  --scrollbar-track: #31231f;
+  --app-surface-soft: #3a2a25;
+}
+
+:root[data-theme="dark"][data-palette="violet"],
+:root[data-bs-theme="dark"][data-palette="violet"] {
+  --app-bg: #272337;
+  --bg-color: #272337;
+  --scrollbar-track: #272337;
+  --app-surface-soft: #302b43;
+}
