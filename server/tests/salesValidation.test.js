@@ -26,3 +26,16 @@ test("recomputeSaleTotals computes credit due for credit sale", () => {
   assert.equal(result.payable, 300);
   assert.equal(result.computedCreditDue, 200);
 });
+
+test("recomputeSaleTotals treats advance payment as the received portion only", () => {
+  const result = recomputeSaleTotals({
+    items: [{ total: 1000 }],
+    paymentBreakdown: [{ mode: "Cash", amount: 250 }],
+    billType: "advance"
+  });
+
+  assert.equal(result.payable, 1000);
+  assert.equal(result.paidAmount, 250);
+  assert.equal(result.advanceAmount, 250);
+  assert.equal(result.computedCreditDue, 750);
+});

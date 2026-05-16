@@ -5,8 +5,12 @@ import useAppSettings from "../../hooks/useAppSettings";
 import { getApiErrorMessage } from "../../utils/api";
 import { notifyError } from "../../utils/notify";
 import LabelPrintModal from "./LabelPrintModal";
+import { buildRows } from "./labelPrintUtils.jsx";
 
-const getPendingItems = (bill) => (bill.items || []).filter((item) => !item.labelsPrinted);
+const getPendingItems = (bill) => buildRows(bill.items || []).filter((item) => Number(item.remainingLabels || 0) > 0);
+const getPendingLabelCount = (bill) => getPendingItems(bill).reduce((sum, item) => sum + Number(item.remainingLabels || 0), 0);
+const getReceiveDate = (bill) => String(bill.receiveDate || bill.receivedAt || bill.createdAt || "").slice(0, 10);
+const getBillDate = (bill) => String(bill.billDate || "").slice(0, 10);
 
 const LabelPrintScreen = () => {
     const appSettings = useAppSettings();
@@ -15,7 +19,7 @@ const LabelPrintScreen = () => {
     const [loading, setLoading] = useState(true);
     const [error, setError] = useState(null);
     const [selectedBill, setSelectedBill] = useState(null);
-    const [filters, setFilters] = useState({ grnNo: "", billNo: "", party: "", date: "", status: "" });
+    const [filters, setFilters] = useState({ grnNo: "", billNo: "", party: "", receiveDate: "", billDate: "", status: "", search: "" });
     const [pageSize, setPageSize] = useState(10);
     const [activeBillIndex, setActiveBillIndex] = useState(-1);
     const billRowRefs = useRef(new Map());
@@ -69,8 +73,19 @@ const LabelPrintScreen = () => {
         if (filters.grnNo && !String(bill.grnNo || "").toLowerCase().includes(filters.grnNo.toLowerCase())) return false;
         if (filters.billNo && !String(bill.billNo || "").toLowerCase().includes(filters.billNo.toLowerCase())) return false;
         if (filters.party && !String(bill.party?.name || bill.party || "").toLowerCase().includes(filters.party.toLowerCase())) return false;
-        if (filters.date && String(bill.billDate || "").slice(0, 10) !== filters.date) return false;
+        if (filters.receiveDate && getReceiveDate(bill) !== filters.receiveDate) return false;
+        if (filters.billDate && getBillDate(bill) !== filters.billDate) return false;
         if (filters.status && filters.status !== "Pending") return false;
+        if (filters.search) {
+            const haystack = [
+                bill.grnNo,
+                bill.billNo,
+                bill.party?.name || bill.party,
+                getReceiveDate(bill),
+                getBillDate(bill),
+            ].join(" ").toLowerCase();
+            if (!haystack.includes(filters.search.toLowerCase())) return false;
+        }
         return true;
     }), [bills, filters]);
 
@@ -104,6 +119,31 @@ const LabelPrintScreen = () => {
             event.preventDefault();
             openModal(pendingBills[activeBillIndex]);
         }
+    };
+
+    const exportCsv = () => {
+        const escapeCsv = (value) => `"${String(value ?? "").replace(/"/g, "\"\"")}"`;
+        const rows = [
+            ["GRN", "Receive Date", "Party", "Bill No", "Bill Date", "Pending Labels", "Status"],
+            ...pendingBills.map((bill) => [
+                bill.grnNo || "",
+                getReceiveDate(bill),
+                bill.party?.name || bill.party || "",
+                bill.billNo || "",
+                getBillDate(bill),
+                getPendingLabelCount(bill),
+                "Pending",
+            ]),
+        ];
+        const blob = new Blob([rows.map((row) => row.map(escapeCsv).join(",")).join("\n")], {
+            type: "text/csv;charset=utf-8;",
+        });
+        const url = URL.createObjectURL(blob);
+        const link = document.createElement("a");
+        link.href = url;
+        link.download = `label-printing-${new Date().toISOString().slice(0, 10)}.csv`;
+        link.click();
+        URL.revokeObjectURL(url);
     };
 
     return (
@@ -142,10 +182,10 @@ const LabelPrintScreen = () => {
                     {error ? <div className="alert alert-danger">{error}</div> : null}
                     <form className="row g-3">
                         <Field id="label-grn" label="GRN" value={filters.grnNo} onChange={(grnNo) => setFilters((current) => ({ ...current, grnNo }))} />
-                        <DateField id="label-date" label="Receive Date" value={filters.date} onChange={(date) => setFilters((current) => ({ ...current, date }))} />
+                        <DateField id="label-date" label="Receive Date" value={filters.receiveDate} onChange={(receiveDate) => setFilters((current) => ({ ...current, receiveDate }))} />
                         <Field id="label-party" label="Party" value={filters.party} onChange={(party) => setFilters((current) => ({ ...current, party }))} />
                         <Field id="label-bill" label="Bill No" value={filters.billNo} onChange={(billNo) => setFilters((current) => ({ ...current, billNo }))} />
-                        <DateField id="label-bill-date" label="Bill Date" value={filters.date} onChange={(date) => setFilters((current) => ({ ...current, date }))} />
+                        <DateField id="label-bill-date" label="Bill Date" value={filters.billDate} onChange={(billDate) => setFilters((current) => ({ ...current, billDate }))} />
                         <div className="col-12 col-sm-6 col-xl-3">
                             <label className="form-label" htmlFor="label-status">Status</label>
                             <select className="form-select" id="label-status" value={filters.status} onChange={(event) => setFilters((current) => ({ ...current, status: event.target.value }))}>
@@ -155,7 +195,7 @@ const LabelPrintScreen = () => {
                         </div>
                         <div className="col-12 d-flex flex-wrap gap-2 pt-2">
                             <button className="btn btn_style" type="button" onClick={fetchBills}><i className="bx bx-save" /><span>Apply</span></button>
-                            <button className="btn btn_style inActive" type="button" onClick={() => setFilters({ grnNo: "", billNo: "", party: "", date: "", status: "" })}><i className="bx bx-reset" /><span>Clear</span></button>
+                            <button className="btn btn_style inActive" type="button" onClick={() => setFilters({ grnNo: "", billNo: "", party: "", receiveDate: "", billDate: "", status: "", search: "" })}><i className="bx bx-reset" /><span>Clear</span></button>
                         </div>
                     </form>
                 </div>
@@ -174,11 +214,11 @@ const LabelPrintScreen = () => {
                             <div className="dropdown">
                                 <button className="btn btn_style inActive datatable-tool-btn dropdown-toggle" type="button" data-bs-toggle="dropdown" aria-expanded="false"><i className="bx bx-export" /><span>Export</span></button>
                                 <div className="dropdown-menu dropdown-menu-end datatable-action-menu">
-                                    <button className="dropdown-item" type="button"><i className="bx bx-file me-2" />CSV</button>
+                                    <button className="dropdown-item" type="button" onClick={exportCsv}><i className="bx bx-file me-2" />CSV</button>
                                     <button className="dropdown-item" type="button" onClick={() => window.print()}><i className="bx bx-printer me-2" />Print</button>
                                 </div>
                             </div>
-                            <div className="datatable-search"><input type="text" placeholder="Search Records" aria-label="Search Records" value={filters.party} onChange={(event) => setFilters((current) => ({ ...current, party: event.target.value }))} /></div>
+                            <div className="datatable-search"><input type="text" placeholder="Search Records" aria-label="Search Records" value={filters.search} onChange={(event) => setFilters((current) => ({ ...current, search: event.target.value }))} /></div>
                         </div>
                     </div>
                     <div className="table-responsive app-table-wrap">
@@ -196,11 +236,11 @@ const LabelPrintScreen = () => {
                                         className={index === activeBillIndex ? "label-printing__row--active" : ""}
                                     >
                                         <td>{bill.grnNo || "-"}</td>
-                                        <td>{bill.receivedAt ? new Date(bill.receivedAt).toLocaleDateString() : "-"}</td>
+                                        <td>{getReceiveDate(bill) ? new Date(getReceiveDate(bill)).toLocaleDateString() : "-"}</td>
                                         <td>{bill.party?.name || bill.party || "N/A"}</td>
                                         <td>{bill.billNo || "-"}</td>
                                         <td>{bill.billDate ? new Date(bill.billDate).toLocaleDateString() : "-"}</td>
-                                        <td>{getPendingItems(bill).length}</td>
+                                        <td>{getPendingLabelCount(bill)}</td>
                                         <td><span className="status-badge status-warning">Pending</span></td>
                                         <td className="text-end">
                                             <button className="btn btn_style" type="button" onClick={() => openModal(bill)} disabled={!purchaseSettings.labelPrintingEnabled}>

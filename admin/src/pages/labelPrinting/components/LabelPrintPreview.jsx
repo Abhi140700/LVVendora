@@ -1,5 +1,6 @@
 import React from "react";
 import { QRCodeSVG } from "qrcode.react";
+import { getDisplayName } from "../labelPrintUtils.jsx";
 
 const LabelPrintPreview = ({
     companyAcronym,
@@ -24,11 +25,10 @@ const LabelPrintPreview = ({
     const mrpValue = previewLabelDraft?.mrp || selectedItem?.mrp || "0.00";
     const saleRateValue = previewLabelDraft?.saleRate || selectedItem?.saleRate || "0.00";
     const qtyText = previewLabelDraft?.qtyText || selectedItem?.qty || "";
-    const partyName =
-        previewLabelDraft?.partyName ||
-        selectedItem?.partyName ||
-        selectedItem?.party ||
-        "Party Name";
+    const partyName = getDisplayName(
+        previewLabelDraft?.partyName,
+        getDisplayName(selectedItem?.partyName, getDisplayName(selectedItem?.party, "")),
+    );
 
     const billNumber =
         previewLabelDraft?.billNo ||
@@ -47,7 +47,7 @@ const LabelPrintPreview = ({
                         <div className="shipping-label label-print-modal__preview-sheet" aria-label="Shipping barcode label preview">
                             <div className="shipping-label-logo label-print-modal__sheet-brand">
                                 <div className="label-print-modal__sheet-bill-party">
-                                    {partyName} / {billNumber}
+                                    {partyName || "Party"} / {billNumber}
                                 </div>
                             </div>
 
@@ -56,16 +56,16 @@ const LabelPrintPreview = ({
                             </div>
 
                             <div className={`shipping-address from label-print-modal__sheet-pricing${showSinglePrice ? " shipping-address--single-price" : ""}`}>
-                                <strong>MRP :</strong>
-                                <div>
+                                <div className="label-print-modal__price-line">
+                                    <strong>MRP</strong>
                                     <span>Rs. {mrpValue}</span>
                                 </div>
                             </div>
 
                             {!showSinglePrice ? (
                                 <div className="shipping-address to label-print-modal__sheet-qty">
-                                    <strong>Sale Rate :</strong>
-                                    <div>
+                                    <div className="label-print-modal__price-line">
+                                        <strong>Sale Rate</strong>
                                         <span>Rs. {saleRateValue}</span>
                                     </div>
                                 </div>

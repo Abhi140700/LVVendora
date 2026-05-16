@@ -10,7 +10,6 @@ export const recomputeSaleTotals = ({
   discountPercent = 0,
   discountAmount,
   exchangeItems = [],
-  advanceAmount = 0,
   creditDue = 0,
   paymentBreakdown = [],
   billType = "cashpay"
@@ -23,10 +22,12 @@ export const recomputeSaleTotals = ({
   const exchangeAmount = round2(exchangeItems.reduce((sum, item) => sum + round2(item.amount), 0));
   const payable = round2(Math.max(0, subtotal - computedDiscountAmount - exchangeAmount));
   const paidAmount = round2(paymentBreakdown.reduce((sum, row) => sum + round2(row.amount), 0));
-  const normalizedAdvanceAmount = round2(advanceAmount);
-  const totalSettled = round2(paidAmount + normalizedAdvanceAmount);
+  const advancePaidAmount = round2(paymentBreakdown
+    .filter((row) => String(row.mode || "").trim().toLowerCase() !== "loyalty")
+    .reduce((sum, row) => sum + round2(row.amount), 0));
+  const normalizedAdvanceAmount = billType === "advance" ? advancePaidAmount : 0;
   const computedCreditDue = ["credit", "advance"].includes(billType)
-    ? round2(Math.max(0, payable - totalSettled))
+    ? round2(Math.max(0, payable - paidAmount))
     : 0;
 
   return {

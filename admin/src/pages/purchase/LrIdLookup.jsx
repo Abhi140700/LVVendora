@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useState } from "react";
 import { useNavigate, useSearchParams } from "react-router-dom";
 import api from "../../app/axios";
 import useAppSettings from "../../hooks/useAppSettings";
@@ -43,7 +43,7 @@ async function fetchWithAuth(url, options = {}) {
     }
 }
 
-const buildEmptyForm = () => ({
+const buildEmptyForm = (firmName = getCompanyName()) => ({
     lrId: "",
     lrNo: "",
     bale: "",
@@ -55,9 +55,31 @@ const buildEmptyForm = () => ({
     transportCharges: "",
     hamaliCharges: "",
     narration: "",
-    firmName: getCompanyName(),
+    firmName,
     billNo: "",
 });
+
+const sortByName = (items = []) => [...items].sort((a, b) => String(a?.name || "").localeCompare(String(b?.name || "")));
+
+const buildEmptyEntityForm = (name = "") => ({
+    name,
+    contactPerson: "",
+    phone: "",
+    email: "",
+    gstNo: "",
+    addressLine1: "",
+    addressLine2: "",
+    city: "",
+    state: "",
+    stateCode: "",
+    pincode: "",
+    notes: "",
+});
+
+const ENTITY_LABELS = {
+    party: "Party",
+    transporter: "Transporter",
+};
 
 const normalizeLookupData = (record = {}) => ({
     lrId: record?.lrId || "",
@@ -93,6 +115,24 @@ const LrIdLookup = () => {
     const [error, setError] = useState("");
     const [modalOpen, setModalOpen] = useState(false);
     const [modalForm, setModalForm] = useState(buildEmptyForm);
+    const [entityModal, setEntityModal] = useState({
+        open: false,
+        type: "party",
+        target: "form",
+        loadingGst: false,
+        form: buildEmptyEntityForm(),
+    });
+
+    const firmOptions = useMemo(() => {
+        const normalizedCompanyName = String(companyName || "").trim();
+        const options = sortByName(firms);
+
+        if (normalizedCompanyName && !options.some((firm) => String(firm.name || "").trim().toLowerCase() === normalizedCompanyName.toLowerCase())) {
+            options.push({ _id: "settings-company", name: normalizedCompanyName });
+        }
+
+        return sortByName(options);
+    }, [companyName, firms]);
 
     useEffect(() => {
         setForm((current) => (
@@ -121,17 +161,149 @@ const LrIdLookup = () => {
             fetchWithAuth(`${API_BASE}/parties?type=firm`),
         ]);
 
-        setParties(partyData.data || []);
-        setTransporters(transporterData.data || []);
-        setFirms(firmData.data || []);
+        setParties(sortByName(partyData.data || []));
+        setTransporters(sortByName(transporterData.data || []));
+        setFirms(sortByName(firmData.data || []));
     }, []);
 
     const hydrateForm = (entryRecord, purchaseRecord) => {
         const source = entryRecord || purchaseRecord || {};
         setForm({
-            ...buildEmptyForm(),
+            ...buildEmptyForm(companyName),
             ...normalizeLookupData(source),
         });
+    };
+
+    const openEntityModal = (type, target = "form", currentName = "") => {
+        setEntityModal({
+            open: true,
+            type,
+            target,
+            loadingGst: false,
+            form: buildEmptyEntityForm(currentName),
+        });
+    };
+
+    const closeEntityModal = () => {
+        setEntityModal((current) => ({ ...current, open: false }));
+    };
+
+    const updateEntityModalField = (field, value) => {
+        setEntityModal((current) => ({
+            ...current,
+            form: {
+                ...current.form,
+                [field]: value,
+            },
+        }));
+    };
+
+    const applyCreatedEntity = (entity, type, target) => {
+        const name = entity?.name || "";
+        if (!name) return;
+
+        if (type === "party") {
+            setParties((current) => sortByName([...current.filter((item) => item._id !== entity._id), entity]));
+            const updater = (current) => ({ ...current, partyName: name });
+            if (target === "modal") {
+                setModalForm(updater);
+            } else {
+                setForm(updater);
+            }
+            return;
+        }
+
+        setTransporters((current) => sortByName([...current.filter((item) => item._id !== entity._id), entity]));
+        const updater = (current) => ({ ...current, transporter: name });
+        if (target === "modal") {
+            setModalForm(updater);
+        } else {
+            setForm(updater);
+        }
+    };
+
+    const fetchGstDetails = async () => {
+        const gstNo = String(entityModal.form.gstNo || "").trim().toUpperCase();
+        if (!gstNo) {
+            alert("Enter GST number first");
+            return;
+        }
+
+        setEntityModal((current) => ({ ...current, loadingGst: true }));
+        try {
+            const response = await fetchWithAuth(`${API_BASE}/parties/gst/${encodeURIComponent(gstNo)}`, {
+                headers: { "Content-Type": "application/json" },
+            });
+            const gstData = response.data || {};
+
+            setEntityModal((current) => ({
+                ...current,
+                loadingGst: false,
+                form: {
+                    ...current.form,
+                    name: current.form.name || gstData.partyName || gstData.tradeName || gstData.legalName || "",
+                    contactPerson: gstData.contactPerson || current.form.contactPerson,
+                    phone: gstData.phone || current.form.phone,
+                    email: gstData.email || current.form.email,
+                    addressLine1: gstData.addressLine1 || current.form.addressLine1,
+                    addressLine2: gstData.addressLine2 || current.form.addressLine2,
+                    city: gstData.city || current.form.city,
+                    state: gstData.state || current.form.state,
+                    stateCode: gstData.stateCode || current.form.stateCode,
+                    pincode: gstData.pincode || current.form.pincode,
+                    gstNo: gstData.gstNo || current.form.gstNo,
+                },
+            }));
+
+            if (response.message) {
+                alert(response.message);
+            }
+        } catch (err) {
+            setEntityModal((current) => ({ ...current, loadingGst: false }));
+            alert(err.message || "Failed to fetch GST details");
+        }
+    };
+
+    const saveEntity = async () => {
+        const entityName = String(entityModal.form.name || "").trim();
+        if (!entityName) {
+            alert(`${ENTITY_LABELS[entityModal.type]} name is required`);
+            return;
+        }
+
+        try {
+            const payload = {
+                name: entityName,
+                partyType: entityModal.type,
+                phone: entityModal.form.phone,
+            };
+
+            if (entityModal.type === "party") {
+                Object.assign(payload, {
+                    contactPerson: entityModal.form.contactPerson,
+                    email: entityModal.form.email,
+                    gstNo: entityModal.form.gstNo,
+                    addressLine1: entityModal.form.addressLine1,
+                    addressLine2: entityModal.form.addressLine2,
+                    city: entityModal.form.city,
+                    state: entityModal.form.state,
+                    stateCode: entityModal.form.stateCode,
+                    pincode: entityModal.form.pincode,
+                    notes: entityModal.form.notes,
+                });
+            }
+
+            const response = await fetchWithAuth(`${API_BASE}/parties`, {
+                method: "POST",
+                body: JSON.stringify(payload),
+            });
+            const entity = response.data || response;
+            applyCreatedEntity(entity, entityModal.type, entityModal.target);
+            closeEntityModal();
+            await fetchMasters();
+        } catch (err) {
+            alert(err.message || `Failed to save ${ENTITY_LABELS[entityModal.type]}`);
+        }
     };
 
     const openPurchaseEntry = (targetLrId) => {
@@ -172,14 +344,14 @@ const LrIdLookup = () => {
             setPurchase(null);
             setLrEntry(null);
             setForm({
-                ...buildEmptyForm(),
+                ...buildEmptyForm(companyName),
                 lrId: value.trim(),
             });
             setError(err.message || "Failed to fetch LR details");
         } finally {
             setLoading(false);
         }
-    }, [lrId, setSearchParams]);
+    }, [companyName, lrId, setSearchParams]);
 
     useEffect(() => {
         fetchMasters().catch((err) => {
@@ -210,7 +382,7 @@ const LrIdLookup = () => {
 
             if (options.closeModal) {
                 setModalOpen(false);
-                setModalForm(buildEmptyForm());
+                setModalForm(buildEmptyForm(companyName));
             }
 
             await lookup(savedEntry?.lrId || payload.lrId || "");
@@ -233,7 +405,7 @@ const LrIdLookup = () => {
         const openModal = async () => {
             const generatedLrId = await fetchNextLrId();
             setModalForm({
-                ...buildEmptyForm(),
+                ...buildEmptyForm(companyName),
                 lrId: generatedLrId || lrId || "",
             });
             setModalOpen(true);
@@ -313,8 +485,24 @@ const LrIdLookup = () => {
                             />
                         </div>
                         <div className="col-12 col-sm-6 col-xl-3"><label className="form-label" htmlFor="lr-lookup-lr-no">LR No</label><input type="text" className="form-control" id="lr-lookup-lr-no" value={form.lrNo} onChange={(event) => setForm((current) => ({ ...current, lrNo: event.target.value }))} placeholder="Enter LR No" /></div>
-                        <div className="col-12 col-sm-6 col-xl-3"><label className="form-label" htmlFor="lr-lookup-transporter">Transporter</label><input type="text" className="form-control" id="lr-lookup-transporter" value={form.transporter} onChange={(event) => setForm((current) => ({ ...current, transporter: event.target.value }))} placeholder="Enter Transporter" /></div>
-                        <div className="col-12 col-sm-6 col-xl-3"><label className="form-label" htmlFor="lr-lookup-party">Party</label><input type="text" className="form-control" id="lr-lookup-party" value={form.partyName} onChange={(event) => setForm((current) => ({ ...current, partyName: event.target.value }))} placeholder="Enter Party" /></div>
+                        <div className="col-12 col-sm-6 col-xl-3">
+                            <label className="form-label" htmlFor="lr-lookup-transporter">Transporter</label>
+                            <div className="input-group">
+                                <input type="text" className="form-control" id="lr-lookup-transporter" list="lr-transporters-list" value={form.transporter} onChange={(event) => setForm((current) => ({ ...current, transporter: event.target.value }))} placeholder="Enter Transporter" />
+                                <button className="btn btn_style" type="button" onClick={() => openEntityModal("transporter", "form", form.transporter)}>
+                                    <i className="bx bx-plus"></i><span>Add</span>
+                                </button>
+                            </div>
+                        </div>
+                        <div className="col-12 col-sm-6 col-xl-3">
+                            <label className="form-label" htmlFor="lr-lookup-party">Party</label>
+                            <div className="input-group">
+                                <input type="text" className="form-control" id="lr-lookup-party" list="lr-parties-list" value={form.partyName} onChange={(event) => setForm((current) => ({ ...current, partyName: event.target.value }))} placeholder="Enter Party" />
+                                <button className="btn btn_style" type="button" onClick={() => openEntityModal("party", "form", form.partyName)}>
+                                    <i className="bx bx-plus"></i><span>Add</span>
+                                </button>
+                            </div>
+                        </div>
                         <div className="col-12 col-sm-6 col-xl-3"><label className="form-label" htmlFor="lr-lookup-from-date">From Date</label><input type="date" className="form-control" id="lr-lookup-from-date" value={form.inwardDate || ""} onChange={(event) => setForm((current) => ({ ...current, inwardDate: event.target.value }))} /></div>
                         <div className="col-12 col-sm-6 col-xl-3"><label className="form-label" htmlFor="lr-lookup-to-date">To Date</label><input type="date" className="form-control" id="lr-lookup-to-date" /></div>
                         <div className="col-12 d-flex flex-wrap gap-2 pt-2">
@@ -328,7 +516,7 @@ const LrIdLookup = () => {
                                 setLrId("");
                                 setPurchase(null);
                                 setLrEntry(null);
-                                setForm(buildEmptyForm());
+                                setForm(buildEmptyForm(companyName));
                                 setError("");
                             }}>
                                 <i className="bx bx-reset"></i><span>Clear</span>
@@ -551,6 +739,13 @@ const LrIdLookup = () => {
                 </div>
             </section>
 
+            <datalist id="lr-parties-list">
+                {parties.map((party) => <option key={party._id || party.name} value={party.name} />)}
+            </datalist>
+            <datalist id="lr-transporters-list">
+                {transporters.map((party) => <option key={party._id || party.name} value={party.name} />)}
+            </datalist>
+
             {modalOpen ? (
                 <>
                     <div className="modal-backdrop fade show"></div>
@@ -577,22 +772,26 @@ const LrIdLookup = () => {
                                             <label className="form-label">Firm</label>
                                             <select className="form-select" value={modalForm.firmName} onChange={(event) => setModalForm((current) => ({ ...current, firmName: event.target.value }))}>
                                                 <option value="">Select firm</option>
-                                                {firms.map((firm) => <option key={firm._id} value={firm.name}>{firm.name}</option>)}
+                                                {firmOptions.map((firm) => <option key={firm._id || firm.name} value={firm.name}>{firm.name}</option>)}
                                             </select>
                                         </div>
                                         <div className="col-12 col-sm-6 col-xl-3">
                                             <label className="form-label">Party</label>
-                                            <select className="form-select" value={modalForm.partyName} onChange={(event) => setModalForm((current) => ({ ...current, partyName: event.target.value }))}>
-                                                <option value="">Select party</option>
-                                                {parties.map((party) => <option key={party._id} value={party.name}>{party.name}</option>)}
-                                            </select>
+                                            <div className="input-group">
+                                                <input className="form-control" list="lr-parties-list" value={modalForm.partyName} onChange={(event) => setModalForm((current) => ({ ...current, partyName: event.target.value }))} placeholder="Enter Party" />
+                                                <button className="btn btn_style" type="button" onClick={() => openEntityModal("party", "modal", modalForm.partyName)}>
+                                                    <i className="bx bx-plus"></i><span>Add</span>
+                                                </button>
+                                            </div>
                                         </div>
                                         <div className="col-12 col-sm-6 col-xl-3">
                                             <label className="form-label">Transporter</label>
-                                            <select className="form-select" value={modalForm.transporter} onChange={(event) => setModalForm((current) => ({ ...current, transporter: event.target.value }))}>
-                                                <option value="">Select transporter</option>
-                                                {transporters.map((party) => <option key={party._id} value={party.name}>{party.name}</option>)}
-                                            </select>
+                                            <div className="input-group">
+                                                <input className="form-control" list="lr-transporters-list" value={modalForm.transporter} onChange={(event) => setModalForm((current) => ({ ...current, transporter: event.target.value }))} placeholder="Enter Transporter" />
+                                                <button className="btn btn_style" type="button" onClick={() => openEntityModal("transporter", "modal", modalForm.transporter)}>
+                                                    <i className="bx bx-plus"></i><span>Add</span>
+                                                </button>
+                                            </div>
                                         </div>
                                         <div className="col-12">
                                             <label className="form-label">Narration</label>
@@ -604,6 +803,92 @@ const LrIdLookup = () => {
                                     <button type="button" className="btn btn_style inActive" onClick={() => setModalOpen(false)}>Close</button>
                                     <button type="button" className="btn btn_style" onClick={() => saveLrDetails(modalForm, { closeModal: true })} disabled={saving}>{saving ? "Saving..." : "Save LR Entry"}</button>
                                     <button type="button" className="btn btn_style inActive" onClick={() => saveLrDetails(modalForm, { closeModal: true, openPurchaseAfterSave: true })} disabled={saving}>Save & Open Purchase</button>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </>
+            ) : null}
+
+            {entityModal.open ? (
+                <>
+                    <div className="modal-backdrop fade show"></div>
+                    <div className="modal fade show d-block" tabIndex="-1" role="dialog" aria-modal="true" aria-hidden="false" onMouseDown={closeEntityModal}>
+                        <div className="modal-dialog modal-lg modal-dialog-centered modal-dialog-scrollable" onMouseDown={(event) => event.stopPropagation()}>
+                            <div className="modal-content">
+                                <div className="modal-header">
+                                    <div>
+                                        <h5 className="modal-title">Add {ENTITY_LABELS[entityModal.type]}</h5>
+                                        <p className="mb-0 text-muted">The new {ENTITY_LABELS[entityModal.type].toLowerCase()} will be selected here and added to the dropdown list.</p>
+                                    </div>
+                                    <button type="button" className="btn-close" onClick={closeEntityModal} aria-label="Close"></button>
+                                </div>
+                                <div className="modal-body">
+                                    <form className="row g-3" onSubmit={(event) => event.preventDefault()}>
+                                        {entityModal.type === "party" ? (
+                                            <div className="col-12">
+                                                <label className="form-label">GSTIN</label>
+                                                <div className="input-group">
+                                                    <input className="form-control" value={entityModal.form.gstNo} onChange={(event) => updateEntityModalField("gstNo", event.target.value.toUpperCase())} placeholder="Enter GSTIN" />
+                                                    <button type="button" className="btn btn_style" onClick={fetchGstDetails} disabled={entityModal.loadingGst}>
+                                                        {entityModal.loadingGst ? "Fetching..." : "Fetch GST"}
+                                                    </button>
+                                                </div>
+                                            </div>
+                                        ) : null}
+                                        <div className="col-12 col-md-6">
+                                            <label className="form-label">{ENTITY_LABELS[entityModal.type]} Name</label>
+                                            <input className="form-control" value={entityModal.form.name} onChange={(event) => updateEntityModalField("name", event.target.value)} autoFocus />
+                                        </div>
+                                        <div className="col-12 col-md-6">
+                                            <label className="form-label">Phone</label>
+                                            <input className="form-control" value={entityModal.form.phone} onChange={(event) => updateEntityModalField("phone", event.target.value)} />
+                                        </div>
+                                        {entityModal.type === "party" ? (
+                                            <>
+                                                <div className="col-12 col-md-6">
+                                                    <label className="form-label">Contact Person</label>
+                                                    <input className="form-control" value={entityModal.form.contactPerson} onChange={(event) => updateEntityModalField("contactPerson", event.target.value)} />
+                                                </div>
+                                                <div className="col-12 col-md-6">
+                                                    <label className="form-label">Email</label>
+                                                    <input className="form-control" type="email" value={entityModal.form.email} onChange={(event) => updateEntityModalField("email", event.target.value)} />
+                                                </div>
+                                                <div className="col-12 col-md-6">
+                                                    <label className="form-label">Address</label>
+                                                    <input className="form-control" value={entityModal.form.addressLine1} onChange={(event) => updateEntityModalField("addressLine1", event.target.value)} />
+                                                </div>
+                                                <div className="col-12 col-md-6">
+                                                    <label className="form-label">Address Line 2</label>
+                                                    <input className="form-control" value={entityModal.form.addressLine2} onChange={(event) => updateEntityModalField("addressLine2", event.target.value)} />
+                                                </div>
+                                                <div className="col-12 col-md-3">
+                                                    <label className="form-label">City</label>
+                                                    <input className="form-control" value={entityModal.form.city} onChange={(event) => updateEntityModalField("city", event.target.value)} />
+                                                </div>
+                                                <div className="col-12 col-md-3">
+                                                    <label className="form-label">State</label>
+                                                    <input className="form-control" value={entityModal.form.state} onChange={(event) => updateEntityModalField("state", event.target.value)} />
+                                                </div>
+                                                <div className="col-12 col-md-3">
+                                                    <label className="form-label">State Code</label>
+                                                    <input className="form-control" value={entityModal.form.stateCode} onChange={(event) => updateEntityModalField("stateCode", event.target.value)} />
+                                                </div>
+                                                <div className="col-12 col-md-3">
+                                                    <label className="form-label">Pincode</label>
+                                                    <input className="form-control" value={entityModal.form.pincode} onChange={(event) => updateEntityModalField("pincode", event.target.value)} />
+                                                </div>
+                                                <div className="col-12">
+                                                    <label className="form-label">Notes</label>
+                                                    <textarea className="form-control" rows="3" value={entityModal.form.notes} onChange={(event) => updateEntityModalField("notes", event.target.value)} />
+                                                </div>
+                                            </>
+                                        ) : null}
+                                    </form>
+                                </div>
+                                <div className="modal-footer">
+                                    <button type="button" className="btn btn_style inActive" onClick={closeEntityModal}>Cancel</button>
+                                    <button type="button" className="btn btn_style" onClick={saveEntity}>Save {ENTITY_LABELS[entityModal.type]}</button>
                                 </div>
                             </div>
                         </div>

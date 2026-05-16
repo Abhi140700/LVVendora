@@ -6,6 +6,27 @@ const systemSettingsSchema = new mongoose.Schema({
     default: "LVVendora",
     trim: true
   },
+  companyTagline: {
+    type: String,
+    default: "Fashion & Tradition",
+    trim: true
+  },
+  companyAddress: {
+    type: String,
+    default: "26/A SHANIWAR PETH KARAD.",
+    trim: true
+  },
+  companyPhone: {
+    type: String,
+    default: "7020447205, 9604249177, 8208442643",
+    trim: true
+  },
+  gstin: {
+    type: String,
+    default: "27AAFFL3196B1ZF",
+    trim: true,
+    uppercase: true
+  },
   billingCounter: {
     type: String,
     default: "Main Counter",
@@ -60,6 +81,54 @@ const systemSettingsSchema = new mongoose.Schema({
       enum: ["lime", "sky", "coral", "violet"],
       default: "lime",
       trim: true
+    }
+  },
+  loyalty: {
+    enabled: {
+      type: Boolean,
+      default: true
+    },
+    earnPerAmount: {
+      type: Number,
+      default: 100,
+      min: 1
+    },
+    pointsPerStep: {
+      type: Number,
+      default: 1,
+      min: 0
+    },
+    redeemValuePerPoint: {
+      type: Number,
+      default: 1,
+      min: 0
+    },
+    minRedeemPoints: {
+      type: Number,
+      default: 0,
+      min: 0
+    },
+    maxRedeemPercent: {
+      type: Number,
+      default: 20,
+      min: 0,
+      max: 100
+    },
+    enrollmentFee: {
+      type: Number,
+      default: 0,
+      min: 0
+    },
+    enrollmentBonusPoints: {
+      type: Number,
+      default: 0,
+      min: 0
+    },
+    cardSequencePadding: {
+      type: Number,
+      default: 4,
+      min: 1,
+      max: 8
     }
   },
   sales: {

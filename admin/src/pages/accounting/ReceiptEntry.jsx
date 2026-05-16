@@ -19,6 +19,7 @@ const emptyForm = {
     paymentMode: "Cash",
     referenceNo: "",
     billNo: "",
+    saleId: "",
     note: "",
 };
 
@@ -29,6 +30,7 @@ const ReceiptEntry = () => {
     const [customers, setCustomers] = useState([]);
     const [receipts, setReceipts] = useState([]);
     const [ledgerEntries, setLedgerEntries] = useState([]);
+    const [pendingBills, setPendingBills] = useState([]);
     const [customerQuery, setCustomerQuery] = useState("");
     const [receiptQuery, setReceiptQuery] = useState("");
     const [loading, setLoading] = useState(true);
@@ -50,10 +52,12 @@ const ReceiptEntry = () => {
     const loadLedger = async (customerId) => {
         if (!customerId) {
             setLedgerEntries([]);
+            setPendingBills([]);
             return;
         }
         const data = await fetchCustomerLedger(customerId);
         setLedgerEntries(data.data || []);
+        setPendingBills(data.pendingBills || []);
     };
 
     useEffect(() => {
@@ -115,8 +119,20 @@ const ReceiptEntry = () => {
             customerId: customer._id,
             customerName: customer.name || "",
             customerPhone: customer.phone || "",
+            billNo: "",
+            saleId: "",
         }));
         setCustomerQuery(customer.name || "");
+    };
+
+    const choosePendingBill = (bill) => {
+        setForm((current) => ({
+            ...current,
+            saleId: bill._id,
+            billNo: bill.billNo || bill.displayBillNo || bill.invoiceNo || "",
+            amount: round2(bill.pendingAmount || bill.creditDue).toFixed(2),
+            note: `${bill.billingMode || "Credit"} settlement`.trim(),
+        }));
     };
 
     const handleCustomerLookupKeyDown = (event) => {
@@ -460,6 +476,39 @@ const ReceiptEntry = () => {
                             {selectedCustomer ? (
                                 <>
                                     <div className="summary-line"><span>Current Balance</span><strong>Rs. {round2(selectedCustomer.ledgerBalance).toFixed(2)}</strong></div>
+                                    <div className="mt-3">
+                                        <div className="d-flex justify-content-between align-items-center mb-2">
+                                            <h6 className="mb-0">Pending Credit / Advance Bills</h6>
+                                            <small className="text-muted">{pendingBills.length} pending</small>
+                                        </div>
+                                        {pendingBills.length > 0 ? (
+                                            <div className="quick-action-list">
+                                                {pendingBills.slice(0, 5).map((bill) => (
+                                                    <button
+                                                        key={bill._id}
+                                                        type="button"
+                                                        className={`quick-action justify-content-between ${String(form.saleId) === String(bill._id) ? "active" : ""}`}
+                                                        onClick={() => choosePendingBill(bill)}
+                                                    >
+                                                        <span>
+                                                            <strong>{bill.billNo || bill.invoiceNo || "-"}</strong>
+                                                            <small className="d-block text-muted">{bill.billingMode || "CREDIT"} • {bill.saleDate ? new Date(bill.saleDate).toLocaleDateString() : "-"}</small>
+                                                        </span>
+                                                        <span className="text-end">
+                                                            <strong>Rs. {round2(bill.pendingAmount).toFixed(2)}</strong>
+                                                            <small className="d-block text-muted">{bill.paymentStatus || "PENDING"}</small>
+                                                        </span>
+                                                    </button>
+                                                ))}
+                                            </div>
+                                        ) : (
+                                            <div className="empty-state compact">
+                                                <span className="empty-state-icon"><i className="bx bx-check-circle"></i></span>
+                                                <h6>No pending bill</h6>
+                                                <p>This customer has no unpaid credit or advance balance.</p>
+                                            </div>
+                                        )}
+                                    </div>
                                     <div className="table-responsive app-table-wrap mt-3">
                                         <table className="table app-table align-middle">
                                             <thead><tr><th>Entry</th><th>Date</th><th className="text-end">Amount</th><th>Reference</th></tr></thead>

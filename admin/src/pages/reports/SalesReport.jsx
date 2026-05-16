@@ -112,6 +112,7 @@ const SalesReport = () => {
         customer: "",
         invoiceNo: "",
         paymentMode: "",
+        billingMode: "",
         search: "",
         status: "",
     });
@@ -197,6 +198,7 @@ const SalesReport = () => {
             if (filters.customer && !String(sale.customer || "Walk-in Customer").toLowerCase().includes(filters.customer.toLowerCase())) return false;
             if (filters.invoiceNo && !String(sale.invoiceNo || "").toLowerCase().includes(filters.invoiceNo.toLowerCase())) return false;
             if (filters.paymentMode && !paymentModes.includes(filters.paymentMode.toLowerCase())) return false;
+            if (filters.billingMode && String(sale.billingMode || "CASH").toUpperCase() !== filters.billingMode) return false;
             if (filters.status && filters.status !== "Invoice Status" && !haystack.includes(filters.status.toLowerCase())) return false;
             if (search && !haystack.includes(search)) return false;
             return true;
@@ -271,7 +273,7 @@ const SalesReport = () => {
         });
         return acc;
     }, {})).map(([label, value]) => [label, label === "CASH" ? Math.max(value - totalAdjustments, 0) : value]);
-    const clearFilters = () => setFilters({ fromDate: "", toDate: "", customer: "", invoiceNo: "", paymentMode: "", search: "", status: "" });
+    const clearFilters = () => setFilters({ fromDate: "", toDate: "", customer: "", invoiceNo: "", paymentMode: "", billingMode: "", search: "", status: "" });
     const exportRows = (format) => exportSalesToCsv(filteredSales, `sales-report.${format === "excel" ? "xls" : "csv"}`);
     const drillTitle = drill.level === "year"
         ? "Yearly Sales"
@@ -434,6 +436,15 @@ const SalesReport = () => {
                                 <option value="credit">Credit</option>
                             </select>
                         </div>
+                        <div className="col-12 col-sm-6 col-xl-3">
+                            <label className="form-label" htmlFor="sales-report-billing-mode">Billing Mode</label>
+                            <select className="form-select" id="sales-report-billing-mode" value={filters.billingMode} onChange={(event) => setFilters((current) => ({ ...current, billingMode: event.target.value }))}>
+                                <option value="">All</option>
+                                <option value="CASH">Cash</option>
+                                <option value="ADVANCE">Advance</option>
+                                <option value="CREDIT">Credit</option>
+                            </select>
+                        </div>
                         <div className="col-12 d-flex flex-wrap gap-2 pt-2">
                             <button className="btn btn_style" type="submit"><i className="bx bx-search"></i><span>Apply</span></button>
                             <button className="btn btn_style inActive" type="button" onClick={clearFilters}><i className="bx bx-reset"></i><span>Clear</span></button>
@@ -564,6 +575,8 @@ const SalesReport = () => {
                                 <tr>
                                     {drill.level === "bill" ? <th className="datatable-check-cell"><input className="form-check-input datatable-select-all" type="checkbox" aria-label="Select all rows" /></th> : null}
                                     <th><span className="sortable-heading">{drill.level === "bill" ? "Invoice" : drill.level === "year" ? "Year" : drill.level === "month" ? "Month" : "Date"}<i className="bx bx-sort-up"></i></span></th>
+                                    {drill.level === "bill" ? <th><span className="sortable-heading">Mode<i className="bx bx-sort"></i></span></th> : null}
+                                    {drill.level === "bill" ? <th><span className="sortable-heading">Bill No<i className="bx bx-sort"></i></span></th> : null}
                                     {drill.level === "bill" ? <th><span className="sortable-heading">Date<i className="bx bx-sort"></i></span></th> : null}
                                     {drill.level === "bill" ? <th><span className="sortable-heading">Customer<i className="bx bx-sort"></i></span></th> : null}
                                     <th><span className="sortable-heading">{drill.level === "bill" ? "Items" : "Invoices"}<i className="bx bx-sort"></i></span></th>
@@ -580,6 +593,8 @@ const SalesReport = () => {
                                         <tr key={row._id}>
                                             <td className="datatable-check-cell"><input className="form-check-input" type="checkbox" aria-label="Select row" /></td>
                                             <td>{row.invoiceNo}</td>
+                                            <td><span className="status-badge status-primary">{row.billingMode || "CASH"}</span></td>
+                                            <td>{row.displayBillNo || row.billNo || "-"}</td>
                                             <td>{row.saleDate ? new Date(row.saleDate).toLocaleDateString() : "-"}</td>
                                             <td>{row.customer || "Walk-in Customer"}</td>
                                             <td>{row.items?.length || 0}</td>

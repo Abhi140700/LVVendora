@@ -1,4 +1,6 @@
 import Party from "../../models/Party.js";
+import { getSystemSettings } from "../../services/systemSettingsService.js";
+import { enrollCustomerInLoyalty } from "../../services/loyaltyService.js";
 
 const INDIAN_STATE_CODES = {
   "01": "Jammu and Kashmir",
@@ -218,6 +220,11 @@ export const createParty = async (req, res) => {
       partyType = "party",
       phone,
       location,
+      customerType,
+      creditLimit,
+      segmentTags,
+      loyaltyCardNo,
+      applyLoyalty,
       dateOfBirth,
       anniversary,
       email,
@@ -260,6 +267,12 @@ export const createParty = async (req, res) => {
       contactPerson,
       phone,
       location,
+      customerType: partyType === "customer" && ["retail", "wholesale", "vip"].includes(customerType) ? customerType : undefined,
+      creditLimit: partyType === "customer" ? Math.max(0, Number(creditLimit || 0)) : undefined,
+      segmentTags: partyType === "customer"
+        ? [...new Set((Array.isArray(segmentTags) ? segmentTags : String(segmentTags || "").split(",")).map((tag) => String(tag || "").trim()).filter(Boolean))]
+        : undefined,
+      loyaltyCardNo: partyType === "customer" ? String(loyaltyCardNo || "").trim() || undefined : undefined,
       dateOfBirth: dateOfBirth || undefined,
       anniversary: anniversary || undefined,
       email,
@@ -278,6 +291,13 @@ export const createParty = async (req, res) => {
     };
 
     const party = await Party.create(payload);
+    if (partyType === "customer" && applyLoyalty) {
+      await enrollCustomerInLoyalty({
+        customer: party,
+        settings: await getSystemSettings(),
+        createdBy: req.user?._id
+      });
+    }
 
     res.status(201).json({
       success: true,
@@ -382,6 +402,13 @@ export const updateParty = async (req, res) => {
     }
 
     Object.assign(party, nextPayload);
+    if (party.partyType === "customer" && req.body.applyLoyalty) {
+      await enrollCustomerInLoyalty({
+        customer: party,
+        settings: await getSystemSettings(),
+        createdBy: req.user?._id
+      });
+    }
     await party.save();
 
     res.status(200).json({

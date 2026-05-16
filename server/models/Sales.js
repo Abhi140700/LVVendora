@@ -120,6 +120,37 @@ const salesSchema = new mongoose.Schema({
     enum: ["cashpay", "exchange", "return", "card-upi", "hold", "recall", "credit", "advance"],
     default: "cashpay"
   },
+  billingMode: {
+    type: String,
+    enum: ["CASH", "ADVANCE", "CREDIT"],
+    default: "CASH",
+    index: true
+  },
+  modeBillNo: {
+    type: Number,
+    min: 1,
+    index: true
+  },
+  displayBillNo: {
+    type: String,
+    trim: true,
+    index: true
+  },
+  paymentStatus: {
+    type: String,
+    enum: ["PAID", "PARTIAL", "PENDING"],
+    default: "PAID",
+    index: true
+  },
+  paymentSummary: {
+    cash: { type: Number, default: 0, min: 0 },
+    card: { type: Number, default: 0, min: 0 },
+    upi: { type: Number, default: 0, min: 0 },
+    advanceUsed: { type: Number, default: 0, min: 0 },
+    creditAmount: { type: Number, default: 0, min: 0 },
+    receivedAmount: { type: Number, default: 0, min: 0 },
+    balanceAmount: { type: Number, default: 0, min: 0 }
+  },
   billNo: {
     type: String,
     trim: true
@@ -249,6 +280,28 @@ const salesSchema = new mongoose.Schema({
     default: 0,
     min: 0
   },
+  loyaltyRedeemedAmount: {
+    type: Number,
+    default: 0,
+    min: 0
+  },
+  advanceDetails: {
+    advanceAmount: { type: Number, default: 0, min: 0 },
+    remainingAmount: { type: Number, default: 0, min: 0 },
+    deliveryStatus: {
+      type: String,
+      enum: ["DELIVERED", "PENDING"],
+      default: "DELIVERED"
+    },
+    expectedDeliveryDate: { type: Date },
+    remarks: { type: String, trim: true }
+  },
+  creditDetails: {
+    creditAmount: { type: Number, default: 0, min: 0 },
+    dueDate: { type: Date },
+    creditDays: { type: Number, default: 0, min: 0 },
+    remarks: { type: String, trim: true }
+  },
   invoicePrintedAt: {
     type: Date
   },
@@ -284,6 +337,8 @@ const salesSchema = new mongoose.Schema({
     }
   }
 }, { timestamps: true });
+
+salesSchema.index({ billingMode: 1, modeBillNo: 1 }, { unique: true, sparse: true });
 
 const Sales = mongoose.model("Sales", salesSchema);
 export default Sales;

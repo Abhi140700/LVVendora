@@ -141,10 +141,10 @@ const LabelPrintEditorPane = ({
                     value={selectedItem.disc}
                     onChange={(value) => {
                         updateSelectedItem((item) => {
-                            item.disc = Number(value);
+                            item.disc = sanitizeDecimalInput(value);
                             const newMrp = calculateMRP(
                                 item.purchaseRate,
-                                item.disc,
+                                Number(item.disc || 0),
                                 item.per,
                             );
                             item.mrp = parseFloat(newMrp);
@@ -163,11 +163,11 @@ const LabelPrintEditorPane = ({
                     value={selectedItem.per}
                     onChange={(value) => {
                         updateSelectedItem((item) => {
-                            item.per = Number(value);
+                            item.per = sanitizeDecimalInput(value);
                             const newMrp = calculateMRP(
                                 item.purchaseRate,
                                 item.disc,
-                                item.per,
+                                Number(item.per || 0),
                             );
                             item.mrp = parseFloat(newMrp);
                             item.saleRate = parseFloat(newMrp);
@@ -185,7 +185,7 @@ const LabelPrintEditorPane = ({
                     value={selectedItem.mrp}
                     onChange={(value) =>
                         updateSelectedItem((item) => {
-                            item.mrp = Number(value);
+                            item.mrp = sanitizeDecimalInput(value);
                         })
                     }
                     type="text"
@@ -196,9 +196,9 @@ const LabelPrintEditorPane = ({
                     value={selectedItem.saleRate}
                     onChange={(value) => {
                         updateSelectedItem((item) => {
-                            item.saleRate = Number(value);
+                            item.saleRate = sanitizeDecimalInput(value);
                             item.commAmount = (
-                                (item.saleRate * item.qty * item.commPercent) /
+                                (Number(item.saleRate || 0) * item.qty * item.commPercent) /
                                 100
                             ).toFixed(2);
                         });

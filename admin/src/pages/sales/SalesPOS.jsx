@@ -110,6 +110,12 @@ const apiFetch = async (url, options = {}) => {
     }
 };
 
+const getBillingModeFromPosMode = (mode = "cashpay") => {
+    if (mode === "advance") return "ADVANCE";
+    if (mode === "credit") return "CREDIT";
+    return "CASH";
+};
+
 const SalesPOS = () => {
     const appSettings = useAppSettings();
     const salesSettings = appSettings.sales || {};
@@ -151,6 +157,7 @@ const SalesPOS = () => {
     const [loading, setLoading] = useState(true);
     const [saving, setSaving] = useState(false);
     const [activeMode, setActiveMode] = useState("cashpay");
+    const [billingMode, setBillingMode] = useState("CASH");
     const [billNo, setBillNo] = useState("");
     const [barcodeInput, setBarcodeInput] = useState("");
     const [customerName, setCustomerName] = useState("");
@@ -159,6 +166,8 @@ const SalesPOS = () => {
     const [customerLocation, setCustomerLocation] = useState("");
     const [customerDob, setCustomerDob] = useState("");
     const [customerAnniversary, setCustomerAnniversary] = useState("");
+    const [loyaltySummary, setLoyaltySummary] = useState({ earned: 0, redeemed: 0, balance: 0, history: [] });
+    const [loyaltyRedeemPoints, setLoyaltyRedeemPoints] = useState("");
     const [deliveryInfo, setDeliveryInfo] = useState("");
     const [referenceNo, setReferenceNo] = useState("");
     const [note, setNote] = useState("");
@@ -169,6 +178,8 @@ const SalesPOS = () => {
     const [discountPercent, setDiscountPercent] = useState(0);
     const [discountPercentInput, setDiscountPercentInput] = useState("");
     const [manualAdvanceAmount, setManualAdvanceAmount] = useState(0);
+    const [advanceExpectedDeliveryDate, setAdvanceExpectedDeliveryDate] = useState("");
+    const [creditDueDate, setCreditDueDate] = useState("");
     const [lines, setLines] = useState([]);
     const [paymentRows, setPaymentRows] = useState([createPaymentRow("Cash", 0)]);
     const [searchModalOpen, setSearchModalOpen] = useState(false);
@@ -285,14 +296,53 @@ const SalesPOS = () => {
     const discountAmount = useMemo(() => round2((subtotal * clampNumber(discountPercent)) / 100), [discountPercent, subtotal]);
     const exchangeAmount = useMemo(() => selectedExchangeItems.reduce((sum, item) => sum + round2(item.amount), 0), [selectedExchangeItems]);
     const payableAmount = useMemo(() => round2(Math.max(0, subtotal - discountAmount - exchangeAmount)), [discountAmount, exchangeAmount, subtotal]);
-    const paidAmount = useMemo(() => paymentRows.reduce((sum, row) => sum + clampNumber(row.amount), 0), [paymentRows]);
-    const advanceAmount = useMemo(() => activeMode === "advance" ? round2(manualAdvanceAmount) : 0, [activeMode, manualAdvanceAmount]);
+    const loyaltyRedeemAmount = useMemo(() => {
+        const points = Math.max(0, Math.floor(clampNumber(loyaltyRedeemPoints)));
+        const valuePerPoint = Math.max(0, clampNumber(appSettings.loyalty?.redeemValuePerPoint, 1));
+        return round2(points * valuePerPoint);
+    }, [appSettings.loyalty?.redeemValuePerPoint, loyaltyRedeemPoints]);
+    const tenderPayableAmount = useMemo(() => round2(Math.max(0, payableAmount - loyaltyRedeemAmount)), [loyaltyRedeemAmount, payableAmount]);
+    const paymentRowsPaidAmount = useMemo(() => (
+        paymentRows.reduce((sum, row) => sum + clampNumber(row.amount), 0)
+    ), [paymentRows]);
+    const paidAmount = useMemo(() => round2(paymentRowsPaidAmount + loyaltyRedeemAmount), [loyaltyRedeemAmount, paymentRowsPaidAmount]);
+    const advanceAmount = useMemo(() => (
+        activeMode === "advance" ? round2(paymentRowsPaidAmount) : 0
+    ), [activeMode, paymentRowsPaidAmount]);
     const creditDue = useMemo(() => {
         if (activeMode === "credit" || activeMode === "advance") {
-            return round2(Math.max(0, payableAmount - paidAmount - advanceAmount));
+            return round2(Math.max(0, payableAmount - paidAmount));
         }
         return 0;
-    }, [activeMode, advanceAmount, paidAmount, payableAmount]);
+    }, [activeMode, paidAmount, payableAmount]);
+    const activeShortcutLabels = useMemo(() => {
+        const primaryPayLabel = activeMode === "credit"
+            ? "Credit Pay"
+            : activeMode === "advance"
+                ? "Advance Pay"
+                : "Cash Pay";
+        const secondaryPayLabel = activeMode === "credit"
+            ? "Credit Card / UPI"
+            : activeMode === "advance"
+                ? "Advance Card / UPI"
+                : "Card / UPI";
+
+        return POS_SHORTCUTS.map((shortcut) => {
+            if (shortcut.key === "F1") {
+                return { ...shortcut, label: primaryPayLabel };
+            }
+            if (shortcut.key === "F3") {
+                return { ...shortcut, label: secondaryPayLabel };
+            }
+            return shortcut;
+        });
+    }, [activeMode]);
+    const selectedCustomerRecord = useMemo(() => (
+        customers.find((customer) => String(customer._id || "") === String(customerId || ""))
+    ), [customerId, customers]);
+    const isLoyaltyMember = useMemo(() => (
+        Boolean(selectedCustomerRecord?.loyaltyCardNo || loyaltySummary?.balance > 0 || loyaltySummary?.history?.length > 0)
+    ), [loyaltySummary?.balance, loyaltySummary?.history?.length, selectedCustomerRecord?.loyaltyCardNo]);
 
     const linesSignature = useMemo(() => JSON.stringify(lines), [lines]);
     const paymentRowsSignature = useMemo(() => JSON.stringify(paymentRows), [paymentRows]);
@@ -410,11 +460,16 @@ const SalesPOS = () => {
     const buildDraftPayload = useCallback(() => ({
         billNo,
         billType: activeMode,
+        billingMode,
         counterName: appSettings.billingCounter || "Main Counter",
         customerId,
         customer: customerName,
         customerPhone,
         location: customerLocation,
+        customerType: selectedCustomerRecord?.customerType,
+        creditLimit: selectedCustomerRecord?.creditLimit,
+        segmentTags: selectedCustomerRecord?.segmentTags || [],
+        loyaltyCardNo: selectedCustomerRecord?.loyaltyCardNo,
         dateOfBirth: customerDob,
         anniversary: customerAnniversary,
         salespersonId,
@@ -430,6 +485,16 @@ const SalesPOS = () => {
         payableAmount,
         advanceAmount,
         creditDue,
+        advanceDetails: {
+            advanceAmount,
+            remainingAmount: creditDue,
+            deliveryStatus: "DELIVERED",
+            expectedDeliveryDate: advanceExpectedDeliveryDate,
+        },
+        creditDetails: {
+            creditAmount: creditDue,
+            dueDate: creditDueDate,
+        },
         paymentBreakdown: paymentRows.map((row) => ({
             mode: row.mode,
             amount: clampNumber(row.amount),
@@ -467,10 +532,13 @@ const SalesPOS = () => {
         })),
     }), [
         activeMode,
+        advanceExpectedDeliveryDate,
         appSettings.billingCounter,
         advanceAmount,
         billNo,
+        billingMode,
         creditDue,
+        creditDueDate,
         customerId,
         customerLocation,
         customerName,
@@ -489,12 +557,14 @@ const SalesPOS = () => {
         salesmanCodeInput,
         salespersonId,
         salesman,
+        selectedCustomerRecord,
         selectedExchangeItems,
         subtotal,
     ]);
 
     const resetBill = useCallback((nextBillNo = "") => {
         setActiveMode("cashpay");
+        setBillingMode("CASH");
         setBillNo(nextBillNo);
         setCustomerId("");
         setCustomerName("");
@@ -502,6 +572,8 @@ const SalesPOS = () => {
         setCustomerLocation("");
         setCustomerDob("");
         setCustomerAnniversary("");
+        setLoyaltySummary({ earned: 0, redeemed: 0, balance: 0, history: [] });
+        setLoyaltyRedeemPoints("");
         setDeliveryInfo("");
         setReferenceNo("");
         setNote("");
@@ -512,14 +584,16 @@ const SalesPOS = () => {
         setDiscountPercent(0);
         setDiscountPercentInput("");
         setManualAdvanceAmount(0);
+        setAdvanceExpectedDeliveryDate("");
+        setCreditDueDate("");
         setLines([]);
         setPaymentRows([createPaymentRow("Cash", 0)]);
         setSelectedExchangeItems([]);
         setBarcodeInput("");
     }, []);
 
-    const fetchNextBillNo = useCallback(async () => {
-        const nextBillRes = await apiFetch(`${API_BASE}/sales/next-bill-no`, {
+    const fetchNextBillNo = useCallback(async (mode = billingMode) => {
+        const nextBillRes = await apiFetch(`${API_BASE}/sales/next-bill-no?mode=${encodeURIComponent(mode)}`, {
             headers: { Authorization: `Bearer ${token}` },
         });
         const nextBillData = await nextBillRes.json();
@@ -527,7 +601,7 @@ const SalesPOS = () => {
             throw new Error(nextBillData.message || "Failed to fetch next bill number");
         }
         return nextBillData?.data?.billNo || "";
-    }, [token]);
+    }, [billingMode, token]);
 
     const refreshCustomers = useCallback(async (query = "") => {
         const params = query ? `?q=${encodeURIComponent(query)}` : "";
@@ -548,7 +622,7 @@ const SalesPOS = () => {
                 method: "DELETE",
                 headers: { Authorization: `Bearer ${token}` },
             });
-            const nextBillNo = await fetchNextBillNo();
+            const nextBillNo = await fetchNextBillNo("CASH");
             resetBill(nextBillNo);
             clearRecoverySnapshot();
             setStatusMessage("Bill reset.");
@@ -567,6 +641,7 @@ const SalesPOS = () => {
         }
 
         setActiveMode(draft.billType || "cashpay");
+        setBillingMode(draft.billingMode || getBillingModeFromPosMode(draft.billType || "cashpay"));
         setBillNo(draft.billNo || fallbackBillNo);
         setCustomerId(draft.customerId || "");
         setCustomerName(draft.customer || "");
@@ -584,6 +659,8 @@ const SalesPOS = () => {
         setDiscountPercent(clampNumber(draft.discountPercent));
         setDiscountPercentInput("");
         setManualAdvanceAmount(clampNumber(draft.advanceAmount));
+        setAdvanceExpectedDeliveryDate(draft.advanceDetails?.expectedDeliveryDate ? String(draft.advanceDetails.expectedDeliveryDate).slice(0, 10) : "");
+        setCreditDueDate(draft.creditDetails?.dueDate ? String(draft.creditDetails.dueDate).slice(0, 10) : "");
         setLines((draft.items || []).map(mapDraftLine));
         setPaymentRows((draft.paymentBreakdown || []).length > 0
             ? draft.paymentBreakdown.map((row, index) => ({ id: `${Date.now()}-${index}`, ...row }))
@@ -638,6 +715,16 @@ const SalesPOS = () => {
     useEffect(() => {
         fetchInitialData();
     }, [fetchInitialData]);
+
+    useEffect(() => {
+        if (loading) {
+            return;
+        }
+
+        fetchNextBillNo(billingMode)
+            .then((nextBillNo) => setBillNo(nextBillNo))
+            .catch((error) => toast.error(error.message || "Failed to fetch mode bill number"));
+    }, [billingMode, fetchNextBillNo, loading]);
 
     useEffect(() => {
         const editSale = location.state?.editSale;
@@ -812,16 +899,61 @@ const SalesPOS = () => {
 
     useEffect(() => {
         if (activeMode === "cashpay") {
-            setPaymentRows([createPaymentRow("Cash", payableAmount)]);
+            setPaymentRows([createPaymentRow("Cash", tenderPayableAmount)]);
             setManualAdvanceAmount(0);
         }
         if (activeMode === "card-upi" && paymentRows.length === 0) {
             setPaymentRows([createPaymentRow("Card", 0), createPaymentRow("UPI", 0)]);
         }
-        if (activeMode === "credit") {
-            setManualAdvanceAmount(0);
+    }, [activeMode, paymentRows.length, tenderPayableAmount]);
+
+    useEffect(() => {
+        if (activeMode !== "advance") {
+            return;
         }
-    }, [activeMode, payableAmount, paymentRows.length]);
+
+        const nextAdvance = Math.min(tenderPayableAmount, Math.max(0, clampNumber(manualAdvanceAmount)));
+        setPaymentRows(nextAdvance > 0 ? [createPaymentRow("Cash", nextAdvance)] : []);
+    }, [activeMode, manualAdvanceAmount, tenderPayableAmount]);
+
+    useEffect(() => {
+        const lookupKey = customerPhone || customerId;
+        if (!lookupKey) {
+            setLoyaltySummary({ earned: 0, redeemed: 0, balance: 0, history: [] });
+            setLoyaltyRedeemPoints("");
+            return undefined;
+        }
+
+        let cancelled = false;
+        const fetchLoyaltySummary = async () => {
+            try {
+                const phonePath = encodeURIComponent(customerPhone || "by-id");
+                const query = customerId ? `?customerId=${encodeURIComponent(customerId)}` : "";
+                const response = await apiFetch(`${API_BASE}/sales/loyalty/${phonePath}${query}`, {
+                    headers: { Authorization: `Bearer ${token}` },
+                });
+                const data = await response.json();
+                if (!cancelled && response.ok && data.success) {
+                    setLoyaltySummary(data.data || { earned: 0, redeemed: 0, balance: 0, history: [] });
+                }
+            } catch {
+                if (!cancelled) {
+                    setLoyaltySummary({ earned: 0, redeemed: 0, balance: 0, history: [] });
+                }
+            }
+        };
+
+        fetchLoyaltySummary();
+        return () => {
+            cancelled = true;
+        };
+    }, [customerId, customerPhone, token]);
+
+    useEffect(() => {
+        if (!isLoyaltyMember && loyaltyRedeemPoints) {
+            setLoyaltyRedeemPoints("");
+        }
+    }, [isLoyaltyMember, loyaltyRedeemPoints]);
 
     const focusLineMeasureInput = useCallback((lineId) => {
         const tryFocus = () => {
@@ -1430,6 +1562,7 @@ const SalesPOS = () => {
         setCustomerLocation(customer.location || customer.area || "");
         setCustomerDob(customer.dateOfBirth ? String(customer.dateOfBirth).slice(0, 10) : "");
         setCustomerAnniversary(customer.anniversary ? String(customer.anniversary).slice(0, 10) : "");
+        setLoyaltyRedeemPoints("");
         setDeliveryInfo(customer.addressLine1 || deliveryInfo);
         setCustomerModalOpen(false);
         setCustomerFormOpen(false);
@@ -1451,7 +1584,11 @@ const SalesPOS = () => {
             name: customer.name || "",
             phone: customer.phone || "",
             customerCode: customer.customerCode || "",
+            customerType: customer.customerType || "retail",
+            creditLimit: customer.creditLimit ?? "",
+            segmentTags: (customer.segmentTags || []).join(", "),
             loyaltyCardNo: customer.loyaltyCardNo || "",
+            applyLoyalty: false,
             area: customer.location || "",
             dateOfBirth: customer.dateOfBirth ? String(customer.dateOfBirth).slice(0, 10) : "",
             anniversary: customer.anniversary ? String(customer.anniversary).slice(0, 10) : "",
@@ -1482,6 +1619,10 @@ const SalesPOS = () => {
                     phone: customerForm.phone,
                     customerPhone: customerForm.phone,
                     location: customerForm.area || customerForm.city,
+                    customerType: customerForm.customerType,
+                    creditLimit: Number(customerForm.creditLimit || 0),
+                    segmentTags: String(customerForm.segmentTags || "").split(",").map((tag) => tag.trim()).filter(Boolean),
+                    applyLoyalty: Boolean(customerForm.applyLoyalty),
                     dateOfBirth: customerForm.dateOfBirth,
                     anniversary: customerForm.anniversary,
                     deliveryInfo: customerForm.deliveryInfo || customerForm.address,
@@ -1942,6 +2083,18 @@ const SalesPOS = () => {
     };
 
     const validateBeforeSave = () => {
+        const redeemPoints = Math.max(0, Math.floor(clampNumber(loyaltyRedeemPoints)));
+        if (redeemPoints > Number(loyaltySummary.balance || 0)) {
+            return `Only ${Number(loyaltySummary.balance || 0)} loyalty points are available.`;
+        }
+        const minRedeem = Math.max(0, clampNumber(appSettings.loyalty?.minRedeemPoints));
+        if (redeemPoints > 0 && redeemPoints < minRedeem) {
+            return `Minimum ${minRedeem} loyalty points required to redeem.`;
+        }
+        const maxRedeemAmount = round2((payableAmount * Math.min(100, Math.max(0, clampNumber(appSettings.loyalty?.maxRedeemPercent, 20)))) / 100);
+        if (loyaltyRedeemAmount > maxRedeemAmount) {
+            return `Loyalty redemption cannot exceed Rs. ${maxRedeemAmount.toFixed(2)} for this bill.`;
+        }
         return validateSaleBeforeSave({
             lines,
             stockWarnings,
@@ -1967,19 +2120,22 @@ const SalesPOS = () => {
         try {
             setSaving(true);
             const payload = {
-                invoiceNo: "",
-                billNo,
                 saleDate: activeSession?.businessDate ? new Date(activeSession.businessDate).toISOString() : new Date().toISOString(),
                 customerId,
                 customer: customerName,
                 customerPhone,
                 location: customerLocation,
+                customerType: selectedCustomerRecord?.customerType,
+                creditLimit: selectedCustomerRecord?.creditLimit,
+                segmentTags: selectedCustomerRecord?.segmentTags || [],
+                loyaltyCardNo: selectedCustomerRecord?.loyaltyCardNo,
                 dateOfBirth: customerDob,
                 anniversary: customerAnniversary,
                 salespersonId,
                 salesman,
                 counterName: appSettings.billingCounter || "Main Counter",
                 billType: activeMode,
+                billingMode,
                 note,
                 deliveryInfo,
                 referenceNo,
@@ -1988,6 +2144,18 @@ const SalesPOS = () => {
                 exchangeAmount,
                 advanceAmount,
                 creditDue,
+                advanceDetails: {
+                    advanceAmount,
+                    remainingAmount: creditDue,
+                    deliveryStatus: "DELIVERED",
+                    expectedDeliveryDate: advanceExpectedDeliveryDate,
+                },
+                creditDetails: {
+                    creditAmount: creditDue,
+                    dueDate: creditDueDate,
+                },
+                loyaltyPointsRedeemed: Math.max(0, Math.floor(clampNumber(loyaltyRedeemPoints))),
+                loyaltyRedeemedAmount: loyaltyRedeemAmount,
                 paymentBreakdown: paymentRows.map((row) => ({
                     mode: row.mode,
                     amount: clampNumber(row.amount),
@@ -2050,7 +2218,7 @@ const SalesPOS = () => {
                 return { ...item, stock: Math.max(0, clampNumber(item.stock) - getLineBillableQty(soldLine)) };
             }));
 
-            const nextBillRes = await apiFetch(`${API_BASE}/sales/next-bill-no`, {
+            const nextBillRes = await apiFetch(`${API_BASE}/sales/next-bill-no?mode=CASH`, {
                 headers: { Authorization: `Bearer ${token}` },
             });
             const nextBillData = await nextBillRes.json();
@@ -2086,7 +2254,7 @@ const SalesPOS = () => {
             if (!response.ok || !data.success) throw new Error(data.message || "Failed to hold bill");
 
             setHeldBills((current) => [data.data, ...current]);
-            const nextBillRes = await apiFetch(`${API_BASE}/sales/next-bill-no`, {
+            const nextBillRes = await apiFetch(`${API_BASE}/sales/next-bill-no?mode=CASH`, {
                 headers: { Authorization: `Bearer ${token}` },
             });
             const nextBillData = await nextBillRes.json();
@@ -2329,6 +2497,7 @@ const SalesPOS = () => {
 
         const popup = window.open("", "_blank", "width=900,height=800");
         if (!popup) return;
+        mode = "invoice";
 
         const finalizePrintModal = () => {
             setPrintModalOpen(false);
@@ -2363,16 +2532,30 @@ const SalesPOS = () => {
         `).join("");
 
         const companyName = appSettings.companyName || "POS Invoice";
-        const counterName = appSettings.billingCounter || "Main Counter";
+        const counterName = appSettings.companyTagline || "Fashion & Tradition";
         const saleDate = new Date(lastCompletedSale.saleDate || Date.now());
-        const saleDateText = saleDate.toLocaleDateString();
-        const saleTimeText = saleDate.toLocaleTimeString();
+        const saleDateText = saleDate.toLocaleDateString("en-GB");
+        const saleTimeText = saleDate.toLocaleTimeString("en-IN", { hour: "2-digit", minute: "2-digit", hour12: true }).toUpperCase();
+        const invoiceMoney = (value) => Number(value || 0).toLocaleString("en-IN", {
+            minimumFractionDigits: 2,
+            maximumFractionDigits: 2,
+        });
+        const invoiceNumber = (value) => Number(value || 0).toLocaleString("en-IN", {
+            maximumFractionDigits: 2,
+        });
         const customerNameText = lastCompletedSale.customer || "Walk-in";
         const customerPhoneText = lastCompletedSale.customerPhone || "-";
         const salespersonText = lastCompletedSale.salesman || "-";
         const deliveryInfoText = lastCompletedSale.deliveryInfo || "-";
         const referenceText = lastCompletedSale.referenceNo || "-";
         const amountWordsText = amountToWords(lastCompletedSale.totalAmount || 0);
+        const completedBillingMode = lastCompletedSale.billingMode || "CASH";
+        const invoiceTitle = completedBillingMode === "ADVANCE"
+            ? "ADVANCE BILL / TAX INVOICE"
+            : completedBillingMode === "CREDIT"
+                ? "CREDIT BILL / TAX INVOICE"
+                : "TAX INVOICE";
+        const completedBillNo = lastCompletedSale.displayBillNo || lastCompletedSale.billNo || "-";
         const qrMarkup = renderToStaticMarkup(
             <QRCodeSVG
                 value={JSON.stringify({
@@ -2394,26 +2577,34 @@ const SalesPOS = () => {
                 <strong>${formatPrintMoney(lastCompletedSale.paidAmount || 0)}</strong>
             </div>
         `;
-        const totalQty = (lastCompletedSale.items || []).reduce((sum, item) => sum + Number(item.displayQty || item.qty || 0), 0);
-        const invoiceItemRows = (lastCompletedSale.items || []).map((item, index) => `
+        const printableInvoiceItems = (lastCompletedSale.items || []).filter((item) => (
+            item?.barcode
+            || item?.itemName
+            || Number(item?.qty || 0) > 0
+            || Number(item?.displayQty || 0) > 0
+            || Number(item?.mtrQty || 0) > 0
+            || Number(item?.total || 0) > 0
+        ));
+        const totalQty = printableInvoiceItems.reduce((sum, item) => sum + Number(item.displayQty || item.qty || 0), 0);
+        const invoiceItemRows = printableInvoiceItems.map((item, index) => {
+            const meterItem = isMeterUnit(item.unit);
+            const pcsQty = Number(item.displayQty || (meterItem ? 0 : item.qty) || 0);
+            const mtrQty = meterItem ? Number(item.mtrQty || item.qty || 0) : 0;
+            return `
             <tr>
                 <td class="center">${index + 1}</td>
                 <td class="center">${escapePrintHtml(item.barcode || "-")}</td>
                 <td class="description-cell">${escapePrintHtml(item.itemName || "-")}</td>
-                <td class="center">${formatPrintMoney(item.displayQty || item.qty || 0).replace(/\.00$/, "")}<br><span>${escapePrintHtml(item.unit || "Pcs")}</span></td>
-                <td class="right">${formatPrintMoney(item.mrp).replace(/\.00$/, "")}</td>
-                <td class="right">${formatPrintMoney(item.sellingRate).replace(/\.00$/, "")}</td>
-                <td class="right">${formatPrintMoney(item.total)}</td>
+                <td class="center">${pcsQty ? invoiceNumber(pcsQty) : ""}</td>
+                <td class="center">${mtrQty ? invoiceNumber(mtrQty) : ""}</td>
+                <td class="right">${invoiceNumber(item.mrp)}</td>
+                <td class="right">${invoiceNumber(item.sellingRate)}</td>
+                <td class="right">${invoiceMoney(item.total)}</td>
             </tr>
-        `).join("");
-        const blankInvoiceRows = Array.from({ length: Math.max(0, 15 - (lastCompletedSale.items || []).length) }).map((_, index) => `
-            <tr class="blank-row">
-                <td class="center">${(lastCompletedSale.items || []).length + index + 1}</td>
-                <td></td><td></td><td></td><td></td><td></td><td></td>
-            </tr>
-        `).join("");
-        const companyAddress = deliveryInfoText !== "-" ? deliveryInfoText : "26/A SHANIWAR PETH KARAD.";
-        const companyPhone = customerPhoneText !== "-" ? customerPhoneText : "7020447205, 9604249177, 8208442643";
+        `;
+        }).join("");
+        const companyAddress = appSettings.companyAddress || "26/A SHANIWAR PETH KARAD.";
+        const companyPhone = appSettings.companyPhone || "7020447205, 9604249177, 8208442643";
         const gstinText = appSettings.gstin || appSettings.gstNo || "27AAFFL3196B1ZF";
         const gstRateValue = Number(lastCompletedSale.gstRate || 0);
         const halfGstRate = gstRateValue ? formatPrintMoney(gstRateValue / 2).replace(/\.00$/, "") : "0";
@@ -2428,53 +2619,57 @@ const SalesPOS = () => {
                     * { box-sizing: border-box; }
                     body {
                         margin: 0;
-                        background: #f7fbff;
+                        background: #ffffff;
                         color: #020d28;
                         font-family: Arial, Helvetica, sans-serif;
-                        padding: 14px;
+                        padding: 12px;
                     }
                     .bill-sheet {
                         width: 820px;
                         margin: 0 auto;
-                        border: 1.8px solid #061735;
-                        border-radius: 14px;
+                        border: 1.5px solid #061735;
+                        border-radius: 17px;
                         padding: 12px;
                         background: #fff;
+                        overflow: hidden;
                     }
                     .invoice-head {
                         display: grid;
-                        grid-template-columns: 270px 1fr 150px;
-                        gap: 14px;
+                        grid-template-columns: 270px 1fr 146px;
+                        gap: 16px;
                         align-items: start;
                     }
                     .brand-lockup {
                         display: grid;
                         grid-template-columns: 62px 1fr;
-                        gap: 10px;
+                        gap: 8px;
                         align-items: center;
                     }
                     .lotus svg { width: 62px; height: 62px; }
                     .brand-name {
-                        font-size: 25px;
+                        font-size: 26px;
                         font-weight: 900;
                         text-transform: uppercase;
-                        letter-spacing: .02em;
+                        letter-spacing: -.01em;
+                        line-height: 1;
                     }
                     .brand-sub {
                         color: #d08200;
-                        font-size: 11px;
+                        font-size: 10px;
                         font-weight: 800;
-                        letter-spacing: .15em;
+                        letter-spacing: .13em;
                         text-transform: uppercase;
+                        margin-top: 6px;
                     }
-                    .title-block { text-align: center; padding-top: 6px; }
+                    .title-block { text-align: center; padding-top: 10px; }
                     .invoice-title {
-                        font-size: 34px;
+                        font-size: 36px;
                         font-weight: 900;
-                        letter-spacing: .04em;
+                        letter-spacing: .02em;
+                        line-height: 1;
                     }
                     .title-rule {
-                        margin: 8px auto 0;
+                        margin: 13px auto 0;
                         width: 200px;
                         height: 2px;
                         background: #d08200;
@@ -2496,7 +2691,7 @@ const SalesPOS = () => {
                         background: linear-gradient(135deg, #020d28, #08204c);
                         color: #fff;
                         border-radius: 8px;
-                        padding: 10px 8px;
+                        padding: 10px 8px 11px;
                         text-align: center;
                         box-shadow: inset 0 0 0 1px rgba(255,255,255,.12);
                     }
@@ -2509,18 +2704,18 @@ const SalesPOS = () => {
                     .bill-card strong {
                         display: block;
                         margin-top: 4px;
-                        font-size: 31px;
+                        font-size: 34px;
                         line-height: 1;
                     }
                     .info-grid {
-                        margin-top: 22px;
+                        margin-top: 24px;
                         display: grid;
-                        grid-template-columns: 1fr 170px;
+                        grid-template-columns: 1fr 156px;
                         gap: 16px;
                     }
                     .shop-lines {
                         display: grid;
-                        gap: 13px;
+                        gap: 14px;
                         font-size: 16px;
                     }
                     .icon-line {
@@ -2530,15 +2725,15 @@ const SalesPOS = () => {
                         gap: 9px;
                     }
                     .icon {
-                        width: 22px;
-                        height: 22px;
+                        width: 23px;
+                        height: 23px;
                         display: inline-grid;
                         place-items: center;
                     }
-                    .icon svg { width: 22px; height: 22px; fill: #020d28; }
+                    .icon svg { width: 23px; height: 23px; fill: #020d28; }
                     .date-stack {
                         display: grid;
-                        gap: 19px;
+                        gap: 22px;
                         font-size: 15px;
                     }
                     .date-line {
@@ -2550,11 +2745,12 @@ const SalesPOS = () => {
                     .date-line strong {
                         display: block;
                         font-size: 18px;
+                        margin-top: 2px;
                     }
                     .customer-line {
-                        margin: 26px 0 14px;
+                        margin: 27px 0 16px;
                         display: grid;
-                        grid-template-columns: 34px 94px 1fr;
+                        grid-template-columns: 34px 96px 1fr;
                         align-items: end;
                         gap: 8px;
                         font-size: 16px;
@@ -2569,13 +2765,23 @@ const SalesPOS = () => {
                         border-collapse: collapse;
                         overflow: hidden;
                     }
+                    .invoice-items-frame {
+                        min-height: 568px;
+                        border-left: 1px solid #d8dde5;
+                        border-right: 1px solid #d8dde5;
+                    }
+                    .invoice-items-frame table {
+                        border-left: 0;
+                        border-right: 0;
+                    }
                     thead th {
                         background: linear-gradient(135deg, #020d28, #08204c);
                         color: #fff;
-                        padding: 12px 8px;
+                        padding: 11px 8px;
                         font-size: 14px;
                         text-align: center;
                         border-right: 1px solid rgba(255,255,255,.38);
+                        line-height: 1.15;
                     }
                     thead th:first-child { border-top-left-radius: 7px; }
                     thead th:last-child {
@@ -2585,10 +2791,13 @@ const SalesPOS = () => {
                     td {
                         border: 1px solid #d8dde5;
                         border-top: none;
-                        padding: 10px 10px;
+                        padding: 9px 10px;
                         font-size: 14px;
-                        height: 34px;
+                        height: 35px;
                         vertical-align: middle;
+                    }
+                    .invoice-items-frame tbody tr:last-child td {
+                        border-bottom: 1px solid #d8dde5;
                     }
                     .center { text-align: center; }
                     .right { text-align: right; }
@@ -2596,13 +2805,12 @@ const SalesPOS = () => {
                         text-transform: uppercase;
                         font-weight: 500;
                     }
-                    .blank-row td { color: transparent; }
                     .total-band {
                         display: grid;
-                        grid-template-columns: 1fr 1.1fr 1.25fr;
+                        grid-template-columns: 1fr 1.1fr 1.24fr;
                     }
                     .total-box {
-                        min-height: 78px;
+                        min-height: 79px;
                         display: flex;
                         align-items: center;
                         justify-content: center;
@@ -2640,7 +2848,7 @@ const SalesPOS = () => {
                     }
                     .total-value {
                         margin-top: 7px;
-                        font-size: 26px;
+                        font-size: 27px;
                         font-weight: 900;
                         letter-spacing: .03em;
                     }
@@ -2651,15 +2859,15 @@ const SalesPOS = () => {
                     }
                     .meta-band {
                         display: grid;
-                        grid-template-columns: 240px 1fr 160px;
+                        grid-template-columns: 238px 1fr 164px;
                         border: 1px solid #d8dde5;
                         border-top: none;
-                        min-height: 86px;
+                        min-height: 83px;
                         border-radius: 0 0 7px 7px;
                         overflow: hidden;
                     }
                     .meta-panel {
-                        padding: 14px 18px;
+                        padding: 12px 18px;
                         display: flex;
                         gap: 14px;
                         align-items: center;
@@ -2693,7 +2901,7 @@ const SalesPOS = () => {
                         justify-content: space-between;
                         align-items: center;
                         gap: 16px;
-                        padding: 12px 10px 8px;
+                        padding: 12px 10px 9px;
                         font-size: 16px;
                         font-weight: 900;
                         border-bottom: 1px solid #d8dde5;
@@ -2706,7 +2914,7 @@ const SalesPOS = () => {
                         gap: 10px;
                         border: 1px solid #8abac4;
                         border-radius: 10px;
-                        padding: 12px 14px;
+                        padding: 11px 14px;
                         font-size: 16px;
                         text-align: center;
                         color: #020d28;
@@ -2747,10 +2955,10 @@ const SalesPOS = () => {
                             </div>
                         </div>
                         <div class="title-block">
-                            <div class="invoice-title">TAX INVOICE</div>
+                            <div class="invoice-title">${escapePrintHtml(invoiceTitle)}</div>
                             <div class="title-rule"></div>
                         </div>
-                        <div class="bill-card"><span>Bill No.</span><strong>${escapePrintHtml(lastCompletedSale.billNo || "-")}</strong></div>
+                        <div class="bill-card"><span>${escapePrintHtml(completedBillingMode)}</span><strong>${escapePrintHtml(completedBillNo)}</strong></div>
                     </div>
 
                     <div class="info-grid">
@@ -2771,39 +2979,42 @@ const SalesPOS = () => {
                         <span class="customer-rule">${escapePrintHtml(customerNameText === "Walk-in" ? "" : customerNameText)}</span>
                     </div>
 
-                    <table>
-                        <thead>
-                            <tr>
-                                <th style="width:58px;">Sr</th>
-                                <th style="width:95px;">Barcode</th>
-                                <th>SL Description</th>
-                                <th style="width:88px;">Qty<br>Mtr/Pcs</th>
-                                <th style="width:92px;">MRP</th>
-                                <th style="width:92px;">Rate</th>
-                                <th style="width:112px;">Amount</th>
-                            </tr>
-                        </thead>
-                        <tbody>${invoiceItemRows}${blankInvoiceRows}</tbody>
-                    </table>
+                    <div class="invoice-items-frame">
+                        <table>
+                            <thead>
+                                <tr>
+                                    <th style="width:58px;">Sr</th>
+                                    <th style="width:92px;">Barcode</th>
+                                    <th>SL Description</th>
+                                    <th style="width:64px;">Qty</th>
+                                    <th style="width:74px;">Mtrs</th>
+                                    <th style="width:88px;">MRP</th>
+                                    <th style="width:88px;">Rate</th>
+                                    <th style="width:108px;">Amount</th>
+                                </tr>
+                            </thead>
+                            <tbody>${invoiceItemRows}</tbody>
+                        </table>
+                    </div>
 
                     <div class="total-band">
                         <div class="total-box dark">
                             <div class="total-icon">▤</div>
-                            <div><div class="total-label">Total Amount</div><div class="total-value">₹ ${formatPrintMoney(lastCompletedSale.subtotal || lastCompletedSale.totalAmount || 0)}</div></div>
+                            <div><div class="total-label">Total Amount</div><div class="total-value">₹ ${invoiceMoney(lastCompletedSale.subtotal || lastCompletedSale.totalAmount || 0)}</div></div>
                         </div>
                         <div class="total-box gst-box">
-                            <div><strong>GST ${escapePrintHtml(String(lastCompletedSale.gstRate || 0))}%</strong><br>(CGST @ ${halfGstRate}%: ₹${halfGstAmount})<br>(SGST @ ${halfGstRate}%: ₹${halfGstAmount})</div>
+                            <div><strong>GST ${escapePrintHtml(String(lastCompletedSale.gstRate || 0))}%</strong><br>(CGST @ ${halfGstRate}%: ₹${invoiceMoney((lastCompletedSale.gstAmount || 0) / 2)})<br>(SGST @ ${halfGstRate}%: ₹${invoiceMoney((lastCompletedSale.gstAmount || 0) / 2)})</div>
                         </div>
                         <div class="total-box teal">
                             <div class="total-icon">₹</div>
-                            <div><div class="total-label">Net Amount</div><div class="total-value">₹ ${formatPrintMoney(lastCompletedSale.totalAmount || 0)}</div></div>
+                            <div><div class="total-label">Net Amount</div><div class="total-value">₹ ${invoiceMoney(lastCompletedSale.totalAmount || 0)}</div></div>
                         </div>
                     </div>
 
                     <div class="meta-band">
                         <div class="meta-panel">
                             <span class="icon"><svg viewBox="0 0 24 24"><path d="M7 6V4a5 5 0 0 1 10 0v2h3v16H4V6h3zm2 0h6V4a3 3 0 0 0-6 0v2z"/></svg></span>
-                            <div><div class="meta-title">Total Qty</div><div class="meta-big">${formatPrintMoney(totalQty).replace(/\.00$/, "")}</div></div>
+                            <div><div class="meta-title">Total Qty</div><div class="meta-big">${invoiceNumber(totalQty)}</div></div>
                         </div>
                         <div class="meta-panel">
                             <div><div class="meta-title">Amount In Words</div><div class="amount-words">${escapePrintHtml(amountWordsText).toUpperCase()}</div></div>
@@ -2974,13 +3185,13 @@ const SalesPOS = () => {
                                 <div class="counter">${escapePrintHtml(counterName)}</div>
                             </div>
                             <div class="doc-badge">
-                                <div class="caption">${mode === "thermal" ? "Bill" : "Sales Bill"}</div>
-                                <div class="value">${escapePrintHtml(lastCompletedSale.billNo || "-")}</div>
+                                <div class="caption">${escapePrintHtml(completedBillingMode)}</div>
+                                <div class="value">${escapePrintHtml(completedBillNo)}</div>
                             </div>
                         </div>
                         <div class="meta-grid">
                             <div class="meta-row"><span>Invoice No</span><strong>${escapePrintHtml(lastCompletedSale.invoiceNo || "-")}</strong></div>
-                            <div class="meta-row"><span>Bill Type</span><strong>${escapePrintHtml(lastCompletedSale.billType || "-")}</strong></div>
+                            <div class="meta-row"><span>Mode</span><strong>${escapePrintHtml(completedBillingMode)}</strong></div>
                             <div class="meta-row"><span>Date</span><strong>${escapePrintHtml(saleDateText)}</strong></div>
                             <div class="meta-row"><span>Time</span><strong>${escapePrintHtml(saleTimeText)}</strong></div>
                             <div class="meta-row"><span>Customer</span><strong>${escapePrintHtml(customerNameText)}</strong></div>
@@ -3141,81 +3352,124 @@ const SalesPOS = () => {
     }, []);
 
     const runCashBillingFlow = useCallback(async () => {
+        setBillingMode("CASH");
         setActiveMode("cashpay");
-        setPaymentRows([createPaymentRow("Cash", payableAmount)]);
+        setPaymentRows([createPaymentRow("Cash", tenderPayableAmount)]);
         setBillingActionModal(null);
         setPaymentModalOpen(false);
         await completeSale();
-    }, [completeSale, payableAmount]);
+    }, [completeSale, tenderPayableAmount]);
 
     const runCardUpiBillingFlow = useCallback(async () => {
         const totals = getCardUpiTotals(paymentRows);
-        if (round2(totals.cash + totals.cardUpi) !== round2(payableAmount)) {
+        if (round2(totals.cash + totals.cardUpi) !== round2(tenderPayableAmount)) {
             toast.error("Cash and Card / UPI total must match the net receivable.");
             return;
         }
 
+        setBillingMode("CASH");
         setActiveMode("card-upi");
         setPaymentModalOpen(false);
         await completeSale();
-    }, [completeSale, payableAmount, paymentRows]);
+    }, [completeSale, paymentRows, tenderPayableAmount]);
 
     const openPaymentOptions = useCallback((method = "Card") => {
         setSelectedPaymentMode(method);
         setPaymentModalOpen(true);
     }, []);
 
-    const triggerBillingShortcut = useCallback((mode) => {
+    const switchBillingMode = useCallback((nextMode) => {
+        const nextBillingMode = getBillingModeFromPosMode(nextMode);
+        setBillingMode(nextBillingMode);
+        setActiveMode(nextMode);
+        setBillingActionModal(null);
+        setPaymentModalOpen(false);
+        if (nextMode === "credit") {
+            setPaymentRows([]);
+            setManualAdvanceAmount(0);
+        }
+        if (nextMode === "advance") {
+            setManualAdvanceAmount("");
+            setPaymentRows([]);
+        }
+        if (nextMode === "cashpay") {
+            setPaymentRows([createPaymentRow("Cash", tenderPayableAmount)]);
+            setManualAdvanceAmount(0);
+        }
+    }, [tenderPayableAmount]);
+
+    const openPrimaryPayFlow = useCallback(() => {
         if (lines.length === 0) {
+            if (activeMode === "credit" || activeMode === "advance") {
+                switchBillingMode("cashpay");
+                return;
+            }
             toast.error("Add items to bill first");
             return;
         }
 
-        if (mode === "cashpay") {
-            setActiveMode("cashpay");
+        if (activeMode === "credit" || activeMode === "advance") {
             setSelectedPaymentMode("Cash");
-            setBillingActionModal("cash");
-            setPaymentModalOpen(false);
+            setBillingActionModal(null);
+            setPaymentModalOpen(true);
             return;
         }
 
-        if (mode === "card-upi") {
-            setActiveMode("card-upi");
+        if (activeMode === "card-upi") {
             setSelectedPaymentMode("Card");
             setBillingActionModal("card-upi");
             setPaymentModalOpen(false);
             return;
         }
 
-        setActiveMode(mode);
-    }, [lines.length]);
+        setSelectedPaymentMode("Cash");
+        setBillingActionModal("cash");
+        setPaymentModalOpen(false);
+    }, [activeMode, lines.length, switchBillingMode]);
+
+    const openSecondaryPayFlow = useCallback(() => {
+        if (lines.length === 0) {
+            toast.error("Add items to bill first");
+            return;
+        }
+
+        if (activeMode === "credit" || activeMode === "advance") {
+            setSelectedPaymentMode("Card");
+            setBillingActionModal(null);
+            setPaymentModalOpen(true);
+            return;
+        }
+
+        if (activeMode !== "card-upi") {
+            switchBillingMode("card-upi");
+        }
+        setSelectedPaymentMode("Card");
+        setBillingActionModal("card-upi");
+        setPaymentModalOpen(false);
+    }, [activeMode, lines.length, switchBillingMode]);
+
+    const triggerBillingShortcut = useCallback((mode) => {
+        switchBillingMode(mode);
+    }, [switchBillingMode]);
 
     const handleShortcutAction = useCallback((shortcut) => {
         if (shortcut.action === "mode" && shortcut.mode) {
-            if (shortcut.mode === "cashpay" || shortcut.mode === "card-upi") {
-                triggerBillingShortcut(shortcut.mode);
+            if (shortcut.key === "F1") {
+                openPrimaryPayFlow();
                 return;
             }
 
-            setActiveMode(shortcut.mode);
-            if (shortcut.mode === "credit") {
-                openConfirmationModal({
-                    title: "Credit Bill",
-                    message: "Save this bill with balance due against the selected customer.",
-                    confirmLabel: "Save Credit",
-                    onConfirm: completeSale,
-                });
+            if (shortcut.key === "F3") {
+                openSecondaryPayFlow();
                 return;
             }
-            if (shortcut.mode === "advance") {
-                openConfirmationModal({
-                    title: "Advance Bill",
-                    message: "Capture the advance amount and keep the remaining due on the customer ledger.",
-                    confirmLabel: "Save Advance",
-                    onConfirm: completeSale,
-                });
-                return;
-            }
+
+            switchBillingMode(shortcut.mode);
+            return;
+        }
+
+        if (shortcut.action === "billing-mode" && shortcut.mode) {
+            switchBillingMode(shortcut.mode);
             return;
         }
 
@@ -3277,7 +3531,7 @@ const SalesPOS = () => {
                 toast.error("Add items to bill first");
                 return;
             }
-            openPaymentOptions("Cash");
+            openPrimaryPayFlow();
             return;
         }
 
@@ -3294,7 +3548,7 @@ const SalesPOS = () => {
 
             toast.error("No completed bill available to print yet.");
         }
-    }, [completeSale, customerName, customerPhone, deliveryInfo, holdCurrentBill, lastCompletedSale, lines.length, navigate, note, openConfirmationModal, openPaymentOptions, permissionRules, printDocument, referenceNo, resetCurrentBill, triggerBillingShortcut]);
+    }, [customerName, customerPhone, deliveryInfo, holdCurrentBill, lastCompletedSale, lines.length, navigate, note, openPrimaryPayFlow, openSecondaryPayFlow, openConfirmationModal, permissionRules, printDocument, referenceNo, resetCurrentBill, switchBillingMode]);
 
     useEffect(() => {
         const handleGlobalShortcut = (event) => {
@@ -3304,13 +3558,31 @@ const SalesPOS = () => {
 
             if (event.code === "F1") {
                 event.preventDefault();
-                triggerBillingShortcut("cashpay");
+                openPrimaryPayFlow();
                 return;
             }
 
             if (event.code === "F3") {
                 event.preventDefault();
-                triggerBillingShortcut("card-upi");
+                openSecondaryPayFlow();
+                return;
+            }
+
+            if (event.code === "F7") {
+                event.preventDefault();
+                switchBillingMode("cashpay");
+                return;
+            }
+
+            if (event.code === "F8") {
+                event.preventDefault();
+                switchBillingMode("credit");
+                return;
+            }
+
+            if (event.code === "F9") {
+                event.preventDefault();
+                switchBillingMode("advance");
                 return;
             }
 
@@ -3337,17 +3609,17 @@ const SalesPOS = () => {
 
         window.addEventListener("keydown", handleGlobalShortcut);
         return () => window.removeEventListener("keydown", handleGlobalShortcut);
-    }, [billNo, completeSale, handleShortcutAction, isAnyModalOpen, openConfirmationModal, payableAmount, saving, triggerBillingShortcut]);
+    }, [billNo, completeSale, handleShortcutAction, isAnyModalOpen, openConfirmationModal, openPrimaryPayFlow, openSecondaryPayFlow, payableAmount, saving, switchBillingMode]);
 
     const handleMobileShortcutSelect = useCallback((value) => {
         setMobileShortcutChoice(value);
         if (!value) return;
-        const shortcut = POS_SHORTCUTS.find((entry) => `${entry.key}-${entry.label}` === value);
+        const shortcut = activeShortcutLabels.find((entry) => `${entry.key}-${entry.label}` === value);
         if (shortcut) {
             handleShortcutAction(shortcut);
         }
         setTimeout(() => setMobileShortcutChoice(""), 0);
-    }, [handleShortcutAction]);
+    }, [activeShortcutLabels, handleShortcutAction]);
 
     if (loading) {
         return <div style={{ padding: 24 }}>Loading POS billing desk...</div>;
@@ -3369,6 +3641,20 @@ const SalesPOS = () => {
                         <p className="mb-0 text-muted">Scan items, build the customer cart, collect payments, and complete retail billing quickly.</p>
                     </div>
                     <div className="page-header-actions">
+                        {[
+                            ["cashpay", "Cash"],
+                            ["advance", "Advance"],
+                            ["credit", "Credit"],
+                        ].map(([mode, label]) => (
+                            <button
+                                key={mode}
+                                className={`btn btn_style ${activeMode === mode ? "" : "inActive"}`}
+                                type="button"
+                                onClick={() => switchBillingMode(mode)}
+                            >
+                                <span>{label}</span>
+                            </button>
+                        ))}
                         <span className="metric-pill"><i className="bx bx-check-circle"></i> Ready</span>
                         <button className="btn btn_style" type="button" onClick={() => triggerBillingShortcut("cashpay")}>
                             <i className="bx bx-plus"></i><span>New</span>
@@ -3413,12 +3699,13 @@ const SalesPOS = () => {
                             setScannerModalOpen={setScannerModalOpen}
                             BILL_MODES={BILL_MODES}
                             activeMode={activeMode}
+                            billingMode={billingMode}
                             permissionRules={permissionRules}
                             salesSettings={salesSettings}
                             activeSession={activeSession}
                             mobileShortcutChoice={mobileShortcutChoice}
                             handleMobileShortcutSelect={handleMobileShortcutSelect}
-                            POS_SHORTCUTS={POS_SHORTCUTS}
+                            POS_SHORTCUTS={activeShortcutLabels}
                         />
 
                         <PosLineItemsTable
@@ -3443,8 +3730,6 @@ const SalesPOS = () => {
                     <PosPaymentPanel
                         styles={styles}
                         activeMode={activeMode}
-                        manualAdvanceAmount={manualAdvanceAmount}
-                        setManualAdvanceAmount={setManualAdvanceAmount}
                         selectedExchangeItems={selectedExchangeItems}
                         round2={round2}
                         subtotal={subtotal}
@@ -3456,6 +3741,12 @@ const SalesPOS = () => {
                         advanceAmount={advanceAmount}
                         payableAmount={payableAmount}
                         creditDue={creditDue}
+                        loyaltySummary={loyaltySummary}
+                        loyaltyRedeemPoints={loyaltyRedeemPoints}
+                        setLoyaltyRedeemPoints={setLoyaltyRedeemPoints}
+                        loyaltyRedeemAmount={loyaltyRedeemAmount}
+                        loyaltySettings={appSettings.loyalty}
+                        isLoyaltyMember={isLoyaltyMember}
                         openConfirmationModal={openConfirmationModal}
                         billNo={billNo}
                         saving={saving}
@@ -3473,7 +3764,7 @@ const SalesPOS = () => {
                                 </div>
                             </div>
                             <div className="pos-shortcut-grid">
-                                {POS_SHORTCUTS.map((shortcut) => (
+                                {activeShortcutLabels.map((shortcut) => (
                                     <button
                                         key={`${shortcut.key}-${shortcut.label}`}
                                         className="quick-action pos-shortcut"
@@ -3493,7 +3784,7 @@ const SalesPOS = () => {
             <CashBillingModal
                 isOpen={billingActionModal === "cash"}
                 onClose={closeBillingFlow}
-                payableAmount={payableAmount}
+                payableAmount={tenderPayableAmount}
                 lines={lines}
                 onConfirm={runCashBillingFlow}
             />
@@ -3501,7 +3792,7 @@ const SalesPOS = () => {
             <CardUpiBillingModal
                 isOpen={billingActionModal === "card-upi"}
                 onClose={closeBillingFlow}
-                payableAmount={payableAmount}
+                payableAmount={tenderPayableAmount}
                 paymentRows={paymentRows}
                 onOpenPaymentOptions={() => openPaymentOptions("Card")}
                 onConfirm={runCardUpiBillingFlow}
@@ -3512,12 +3803,21 @@ const SalesPOS = () => {
                 isOpen={paymentModalOpen}
                 onClose={() => setPaymentModalOpen(false)}
                 paymentMethod={selectedPaymentMode}
-                payableAmount={payableAmount}
+                payableAmount={tenderPayableAmount}
                 lines={lines}
                 createPaymentRow={createPaymentRow}
                 setActiveMode={setActiveMode}
+                activeMode={activeMode}
+                billingMode={billingMode}
                 paymentRows={paymentRows}
                 setPaymentRows={setPaymentRows}
+                setManualAdvanceAmount={setManualAdvanceAmount}
+                expectedDeliveryDate={advanceExpectedDeliveryDate}
+                setExpectedDeliveryDate={setAdvanceExpectedDeliveryDate}
+                creditDueDate={creditDueDate}
+                setCreditDueDate={setCreditDueDate}
+                onConfirm={completeSale}
+                saving={saving}
             />
 
             {searchModalOpen ? (
@@ -3839,11 +4139,34 @@ const SalesPOS = () => {
                                                 </div>
                                                 <div className="col-12 col-sm-6 col-xl-3">
                                                     <label className="form-label">Loyalty Card No</label>
-                                                    <input className="form-control" value={customerForm.loyaltyCardNo} onChange={(event) => setCustomerForm((current) => ({ ...current, loyaltyCardNo: event.target.value }))} placeholder="Enter Loyalty Card No" />
+                                                    <input className="form-control" value={customerForm.loyaltyCardNo || (customerForm.applyLoyalty ? "Auto on save" : "")} readOnly placeholder="Auto on apply" />
+                                                </div>
+                                                <div className="col-12 col-sm-6 col-xl-3">
+                                                    <label className="form-label">Apply Loyalty</label>
+                                                    <label className="form-check d-flex align-items-center gap-2 mt-2">
+                                                        <input className="form-check-input" type="checkbox" checked={Boolean(customerForm.applyLoyalty)} onChange={(event) => setCustomerForm((current) => ({ ...current, applyLoyalty: event.target.checked }))} disabled={Boolean(customerForm.loyaltyCardNo)} />
+                                                        <span className="form-check-label">Fee Rs. {Number(appSettings.loyalty?.enrollmentFee || 0).toFixed(2)}, +{Number(appSettings.loyalty?.enrollmentBonusPoints || 0)} pts</span>
+                                                    </label>
+                                                </div>
+                                                <div className="col-12 col-sm-6 col-xl-3">
+                                                    <label className="form-label">Customer Type</label>
+                                                    <select className="form-select" value={customerForm.customerType} onChange={(event) => setCustomerForm((current) => ({ ...current, customerType: event.target.value }))}>
+                                                        <option value="retail">Retail</option>
+                                                        <option value="wholesale">Wholesale</option>
+                                                        <option value="vip">VIP</option>
+                                                    </select>
                                                 </div>
                                                 <div className="col-12 col-sm-6 col-xl-3">
                                                     <label className="form-label">Name</label>
                                                     <input className="form-control" value={customerForm.name} onChange={(event) => setCustomerForm((current) => ({ ...current, name: event.target.value }))} placeholder="Enter Name" />
+                                                </div>
+                                                <div className="col-12 col-sm-6 col-xl-3">
+                                                    <label className="form-label">Credit Limit</label>
+                                                    <input type="number" className="form-control" value={customerForm.creditLimit} onChange={(event) => setCustomerForm((current) => ({ ...current, creditLimit: event.target.value }))} placeholder="Enter Credit Limit" />
+                                                </div>
+                                                <div className="col-12 col-sm-6 col-xl-3">
+                                                    <label className="form-label">Segments</label>
+                                                    <input className="form-control" value={customerForm.segmentTags} onChange={(event) => setCustomerForm((current) => ({ ...current, segmentTags: event.target.value }))} placeholder="VIP, Birthday" />
                                                 </div>
                                                 <div className="col-12 col-sm-6 col-xl-3">
                                                     <label className="form-label">Area</label>
@@ -3894,7 +4217,7 @@ const SalesPOS = () => {
                                             </form>
                                         </div>
                                     </div>
-                                    <div className="customer-entry-actions mt-3">
+                                    {/* <div className="customer-entry-actions mt-3">
                                         <button type="button" className="btn btn_style inActive" onClick={() => handleCustomerFormAction("save")}>Save</button>
                                         <button type="button" className="btn btn_style" onClick={() => handleCustomerFormAction("add")}>Add</button>
                                         <button type="button" className="btn btn_style inActive" onClick={() => handleCustomerFormAction("edit")}>Edit</button>
@@ -3908,7 +4231,7 @@ const SalesPOS = () => {
                                         <button type="button" className="btn btn_style inActive" onClick={() => handleCustomerFormAction("plain")}><i className="bx bx-export"></i><span>Plain</span></button>
                                         <button type="button" className="btn btn_style inActive" onClick={() => handleCustomerFormAction("contact")}><i className="bx bx-id-card"></i><span>Contact</span></button>
                                         <button type="button" className="btn btn_style inActive" onClick={() => handleCustomerFormAction("by date")}><i className="bx bx-calendar"></i><span>By Date</span></button>
-                                    </div>
+                                    </div> */}
                                 </div>
                                 <div className="modal-footer">
                                     <button type="button" className="btn btn_style inActive" onClick={() => setCustomerFormOpen(false)}>Back to Customer Search</button>
@@ -4366,7 +4689,8 @@ const SalesPOS = () => {
                 >
                     <div style={{ display: "grid", gap: 18 }}>
                         <div style={styles.summaryPreview}>
-                            <SummaryLine label="Bill No" value={lastCompletedSale.billNo || "-"} />
+                            <SummaryLine label="Mode" value={lastCompletedSale.billingMode || "CASH"} />
+                            <SummaryLine label="Bill No" value={lastCompletedSale.displayBillNo || lastCompletedSale.billNo || "-"} />
                             <SummaryLine label="Customer" value={lastCompletedSale.customer || "Walk-in"} />
                             <SummaryLine label="Phone" value={lastCompletedSale.customerPhone || "-"} />
                             <SummaryLine label="Net Amount" value={`Rs. ${round2(lastCompletedSale.totalAmount).toFixed(2)}`} />

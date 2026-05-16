@@ -202,6 +202,16 @@ const SettingsHome = () => {
         });
     };
 
+    const updateLoyaltyField = (field, value) => {
+        setSettings((current) => ({
+            ...current,
+            loyalty: {
+                ...(current.loyalty || DEFAULT_APP_SETTINGS.loyalty),
+                [field]: value,
+            },
+        }));
+    };
+
     const updateToggle = (scope, key) => {
         setSettings((current) => ({
             ...current,
@@ -283,6 +293,10 @@ const SettingsHome = () => {
             <SettingsCard title="Company & Print Setup" description="Fast access to the constants that appear across POS, purchase, and label workflows.">
                 <div className="row g-3">
                     <SettingsField label="Company Name" value={settings.companyName} onChange={(value) => updateTopField("companyName", value)} />
+                    <SettingsField label="Tagline" value={settings.companyTagline} onChange={(value) => updateTopField("companyTagline", value)} />
+                    <SettingsField label="Address" value={settings.companyAddress} onChange={(value) => updateTopField("companyAddress", value)} />
+                    <SettingsField label="Phone" value={settings.companyPhone} onChange={(value) => updateTopField("companyPhone", value)} />
+                    <SettingsField label="GSTIN" value={settings.gstin} onChange={(value) => updateTopField("gstin", value)} />
                     <SettingsField label="Billing Counter" value={settings.billingCounter} onChange={(value) => updateTopField("billingCounter", value)} />
                     <SettingsField label="Thermal Printer" value={settings.thermalPrinter} onChange={(value) => updateTopField("thermalPrinter", value)} />
                     <SettingsField label="Label Printer" value={settings.labelPrinter} onChange={(value) => updateTopField("labelPrinter", value)} />
@@ -305,6 +319,27 @@ const SettingsHome = () => {
                             { value: "EAN13", label: "EAN13" },
                         ]}
                     />
+                </div>
+            </SettingsCard>
+
+            <SettingsCard title="Loyalty Program" description="Control how customers earn and redeem loyalty points from POS billing.">
+                <div className="row g-3">
+                    <div className="col-12 col-lg-4">
+                        <SettingsToggleCard
+                            title="Enable Loyalty"
+                            body="Earn points automatically on completed customer bills."
+                            checked={settings.loyalty?.enabled !== false}
+                            onToggle={() => updateLoyaltyField("enabled", settings.loyalty?.enabled === false)}
+                        />
+                    </div>
+                    <SettingsField label="Earn Amount Step" type="number" value={settings.loyalty?.earnPerAmount ?? 100} onChange={(value) => updateLoyaltyField("earnPerAmount", Number(value || 0))} />
+                    <SettingsField label="Points Per Step" type="number" value={settings.loyalty?.pointsPerStep ?? 1} onChange={(value) => updateLoyaltyField("pointsPerStep", Number(value || 0))} />
+                    <SettingsField label="Redeem Value / Point" type="number" value={settings.loyalty?.redeemValuePerPoint ?? 1} onChange={(value) => updateLoyaltyField("redeemValuePerPoint", Number(value || 0))} />
+                    <SettingsField label="Minimum Redeem Points" type="number" value={settings.loyalty?.minRedeemPoints ?? 0} onChange={(value) => updateLoyaltyField("minRedeemPoints", Number(value || 0))} />
+                    <SettingsField label="Max Redeem %" type="number" value={settings.loyalty?.maxRedeemPercent ?? 20} onChange={(value) => updateLoyaltyField("maxRedeemPercent", Number(value || 0))} />
+                    <SettingsField label="Enrollment Fee" type="number" value={settings.loyalty?.enrollmentFee ?? 0} onChange={(value) => updateLoyaltyField("enrollmentFee", Number(value || 0))} />
+                    <SettingsField label="Enrollment Bonus Points" type="number" value={settings.loyalty?.enrollmentBonusPoints ?? 0} onChange={(value) => updateLoyaltyField("enrollmentBonusPoints", Number(value || 0))} />
+                    <SettingsField label="Card Sequence Padding" type="number" value={settings.loyalty?.cardSequencePadding ?? 4} onChange={(value) => updateLoyaltyField("cardSequencePadding", Number(value || 0))} />
                 </div>
             </SettingsCard>
 

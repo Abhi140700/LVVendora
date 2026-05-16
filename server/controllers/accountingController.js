@@ -2,6 +2,7 @@ import CustomerLedger from "../models/CustomerLedger.js";
 import CashEntry from "../models/CashEntry.js";
 import Party from "../models/Party.js";
 import POSSession from "../models/POSSession.js";
+import Sales from "../models/Sales.js";
 import { createAuditLog } from "../services/auditService.js";
 
 const normalizeText = (value = "") => String(value).trim();
@@ -38,6 +39,53 @@ const syncLedgerBalance = async (customerId) => {
 
   await Party.findByIdAndUpdate(customerId, { ledgerBalance: round2(balance) });
   return round2(balance);
+};
+
+const buildSalePaymentSummary = (sale, receiptAmount = 0, paymentMode = "Cash") => {
+  const currentSummary = sale.paymentSummary || {};
+  const normalizedMode = normalizeText(paymentMode).toLowerCase();
+  const nextReceived = round2(clampNumber(currentSummary.receivedAmount || sale.paidAmount) + receiptAmount);
+  const nextBalance = round2(Math.max(0, clampNumber(sale.totalAmount) - nextReceived));
+
+  return {
+    cash: round2(clampNumber(currentSummary.cash) + (normalizedMode === "cash" ? receiptAmount : 0)),
+    card: round2(clampNumber(currentSummary.card) + (normalizedMode === "card" ? receiptAmount : 0)),
+    upi: round2(clampNumber(currentSummary.upi) + (normalizedMode === "upi" ? receiptAmount : 0)),
+    advanceUsed: clampNumber(currentSummary.advanceUsed),
+    creditAmount: sale.billingMode === "CREDIT" ? nextBalance : clampNumber(currentSummary.creditAmount),
+    receivedAmount: nextReceived,
+    balanceAmount: nextBalance
+  };
+};
+
+const resolveReceiptSale = async ({ saleId, billNo, customerId }) => {
+  const normalizedBillNo = normalizeText(billNo);
+  const filter = {
+    ...(customerId ? { customerId } : {}),
+    $or: [
+      { creditDue: { $gt: 0 } },
+      { paymentStatus: { $in: ["PENDING", "PARTIAL"] } }
+    ]
+  };
+
+  if (saleId) {
+    return Sales.findOne({ _id: saleId, ...filter });
+  }
+
+  if (!normalizedBillNo) {
+    return null;
+  }
+
+  return Sales.findOne({
+    ...filter,
+    $and: [{
+      $or: [
+        { billNo: normalizedBillNo },
+        { displayBillNo: normalizedBillNo },
+        { invoiceNo: normalizedBillNo }
+      ]
+    }]
+  });
 };
 
 const findOrCreateCustomer = async ({ customerId, customerName, customerPhone }) => {
@@ -283,6 +331,21 @@ export const createReceipt = async (req, res) => {
     }
 
     const receiptDate = req.body.receiptDate ? new Date(req.body.receiptDate) : new Date();
+    const paymentMode = normalizeText(req.body.paymentMode) || "Cash";
+    const linkedSale = await resolveReceiptSale({
+      saleId: req.body.saleId,
+      billNo: req.body.billNo,
+      customerId: customer._id
+    });
+    const outstandingAmount = round2(linkedSale?.creditDue || linkedSale?.paymentSummary?.balanceAmount || 0);
+
+    if (linkedSale && amount > outstandingAmount + 0.01) {
+      return res.status(400).json({
+        success: false,
+        message: `Receipt exceeds pending balance for ${linkedSale.displayBillNo || linkedSale.billNo || linkedSale.invoiceNo}. Pending Rs. ${outstandingAmount.toFixed(2)}`
+      });
+    }
+
     const receipt = await CustomerLedger.create({
       customerId: customer._id,
       customerName: customer.name,
@@ -290,14 +353,43 @@ export const createReceipt = async (req, res) => {
       entryType: "payment",
       direction: "credit",
       amount,
-      paymentMode: normalizeText(req.body.paymentMode) || "Cash",
-      billNo: normalizeText(req.body.billNo),
+      paymentMode,
+      saleId: linkedSale?._id || undefined,
+      billNo: linkedSale?.displayBillNo || linkedSale?.billNo || normalizeText(req.body.billNo),
       referenceNo: normalizeText(req.body.referenceNo || req.body.paymentMode),
       note: normalizeText(req.body.note),
       createdBy: req.user?._id,
       createdAt: receiptDate,
       updatedAt: receiptDate
     });
+
+    if (linkedSale) {
+      linkedSale.paidAmount = round2(clampNumber(linkedSale.paidAmount) + amount);
+      linkedSale.creditDue = round2(Math.max(0, clampNumber(linkedSale.totalAmount) - clampNumber(linkedSale.paidAmount)));
+      linkedSale.paymentStatus = linkedSale.creditDue > 0 ? "PARTIAL" : "PAID";
+      linkedSale.paymentSummary = buildSalePaymentSummary(linkedSale, amount, paymentMode);
+      linkedSale.paymentBreakdown = [
+        ...(linkedSale.paymentBreakdown || []),
+        {
+          mode: paymentMode,
+          amount,
+          reference: normalizeText(req.body.referenceNo || `Receipt ${receipt._id}`)
+        }
+      ];
+      if (linkedSale.billingMode === "CREDIT") {
+        linkedSale.creditDetails = {
+          ...(linkedSale.creditDetails || {}),
+          creditAmount: linkedSale.creditDue
+        };
+      }
+      if (linkedSale.billingMode === "ADVANCE") {
+        linkedSale.advanceDetails = {
+          ...(linkedSale.advanceDetails || {}),
+          remainingAmount: linkedSale.creditDue
+        };
+      }
+      await linkedSale.save();
+    }
 
     const ledgerBalance = await syncLedgerBalance(customer._id);
 
@@ -310,7 +402,9 @@ export const createReceipt = async (req, res) => {
       after: receipt.toObject(),
       metadata: {
         amount,
-        ledgerBalance
+        ledgerBalance,
+        linkedSaleId: linkedSale?._id,
+        billNo: linkedSale?.displayBillNo || linkedSale?.billNo || normalizeText(req.body.billNo)
       },
       user: req.user
     });
@@ -320,6 +414,7 @@ export const createReceipt = async (req, res) => {
       message: "Receipt saved successfully",
       data: {
         receipt,
+        linkedSale,
         customer: {
           ...serializeCustomer(customer.toObject ? customer.toObject() : customer),
           ledgerBalance
@@ -409,13 +504,30 @@ export const createExpenseEntry = async (req, res) => {
 
 export const getCustomerLedgerEntries = async (req, res) => {
   try {
-    const entries = await CustomerLedger.find({ customerId: req.params.customerId })
-      .sort({ createdAt: -1 })
-      .lean();
+    const [entries, pendingBills] = await Promise.all([
+      CustomerLedger.find({ customerId: req.params.customerId })
+        .sort({ createdAt: -1 })
+        .lean(),
+      Sales.find({
+        customerId: req.params.customerId,
+        $or: [
+          { creditDue: { $gt: 0 } },
+          { paymentStatus: { $in: ["PENDING", "PARTIAL"] } }
+        ]
+      })
+        .sort({ saleDate: -1 })
+        .select("invoiceNo billNo displayBillNo billingMode saleDate totalAmount paidAmount creditDue paymentStatus")
+        .lean()
+    ]);
 
     return res.status(200).json({
       success: true,
-      data: entries
+      data: entries,
+      pendingBills: pendingBills.map((sale) => ({
+        ...sale,
+        billNo: sale.displayBillNo || sale.billNo || sale.invoiceNo,
+        pendingAmount: round2(sale.creditDue || Math.max(0, clampNumber(sale.totalAmount) - clampNumber(sale.paidAmount)))
+      }))
     });
   } catch (err) {
     console.error("Get Customer Ledger Error:", err);

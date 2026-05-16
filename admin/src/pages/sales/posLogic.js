@@ -44,10 +44,10 @@ export const validateSaleBeforeSave = ({
             return "Add at least one payment row before saving.";
         }
     }
-    if ((activeMode === "cashpay" || activeMode === "card-upi" || activeMode === "return") && round2(paidAmount + advanceAmount) !== payableAmount) {
+    if ((activeMode === "cashpay" || activeMode === "card-upi" || activeMode === "return") && round2(paidAmount) !== payableAmount) {
         return "Settlement must match the net payable amount.";
     }
-    if (activeMode === "advance" && round2(paidAmount + advanceAmount) <= 0) {
+    if (activeMode === "advance" && round2(paidAmount) <= 0) {
         return "Enter advance amount or payment before saving.";
     }
     return "";

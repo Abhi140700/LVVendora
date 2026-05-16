@@ -15,6 +15,11 @@ const emptyCustomer = {
   name: "Customer",
   phone: "",
   email: "",
+  customerType: "retail",
+  creditLimit: 0,
+  segmentTags: [],
+  loyaltyCardNo: "",
+  applyLoyalty: false,
   city: "",
   state: "",
   gstNo: "",
@@ -40,6 +45,8 @@ export default function CustomerOverview() {
   const [loading, setLoading] = useState(true);
   const [editForm, setEditForm] = useState(emptyCustomer);
   const [orderSearch, setOrderSearch] = useState("");
+  const [loyaltyLedger, setLoyaltyLedger] = useState([]);
+  const [communicationHistory, setCommunicationHistory] = useState([]);
 
   const loadData = async () => {
     setLoading(true);
@@ -72,6 +79,11 @@ export default function CustomerOverview() {
       name: customer.name || "",
       phone: customer.phone || "",
       email: customer.email || "",
+      customerType: customer.customerType || "retail",
+      creditLimit: customer.creditLimit || 0,
+      segmentTags: (customer.segmentTags || []).join(", "),
+      loyaltyCardNo: customer.loyaltyCardNo || "",
+      applyLoyalty: false,
       city: customer.city || "",
       state: customer.state || "",
       gstNo: customer.gstNo || "",
@@ -81,6 +93,26 @@ export default function CustomerOverview() {
       notes: customer.notes || "",
     });
   }, [customer]);
+
+  useEffect(() => {
+    if (!customer?._id && !customer?.phone) {
+      setLoyaltyLedger([]);
+      setCommunicationHistory([]);
+      return;
+    }
+
+    const params = {
+      customerId: customer._id,
+      customerPhone: customer.phone,
+    };
+    Promise.all([
+      api.get(`/sales/loyalty/${encodeURIComponent(customer.phone || "by-id")}`, { params }).catch(() => ({ data: { data: { history: [] } } })),
+      api.get("/sales/customers/communication/history", { params }).catch(() => ({ data: { data: [] } })),
+    ]).then(([loyaltyRes, communicationRes]) => {
+      setLoyaltyLedger(loyaltyRes.data?.data?.history || []);
+      setCommunicationHistory(communicationRes.data?.data || []);
+    });
+  }, [customer?._id, customer?.phone]);
 
   const customerSales = useMemo(() => (
     sales
@@ -97,14 +129,20 @@ export default function CustomerOverview() {
 
   const totalSpent = customerSales.reduce((sum, sale) => sum + Number(sale.totalAmount || 0), 0);
   const returnedAmount = customerSales.reduce((sum, sale) => sum + Number(sale.totalReturnedAmount || 0), 0);
-  const loyaltyEarned = customerSales.reduce((sum, sale) => sum + Number(sale.loyaltyPointsEarned || 0), 0);
-  const loyaltyRedeemed = customerSales.reduce((sum, sale) => sum + Number(sale.loyaltyPointsRedeemed || 0), 0);
+  const loyaltyEarned = loyaltyLedger.filter((row) => row.entryType === "earn").reduce((sum, row) => sum + Number(row.points || 0), 0);
+  const loyaltyRedeemed = Math.abs(loyaltyLedger.filter((row) => row.entryType === "redeem").reduce((sum, row) => sum + Number(row.points || 0), 0));
   const loyaltyBalance = Math.max(0, loyaltyEarned - loyaltyRedeemed);
 
   const saveCustomer = async () => {
     if (!customer._id) return;
     try {
-      await api.put(`/parties/${customer._id}`, { ...editForm, partyType: "customer" });
+      await api.put(`/parties/${customer._id}`, {
+        ...editForm,
+        creditLimit: Number(editForm.creditLimit || 0),
+        segmentTags: String(editForm.segmentTags || "").split(",").map((tag) => tag.trim()).filter(Boolean),
+        applyLoyalty: Boolean(editForm.applyLoyalty),
+        partyType: "customer",
+      });
       notifySuccess("Customer updated successfully");
       await loadData();
     } catch (error) {
@@ -150,6 +188,8 @@ export default function CustomerOverview() {
                     <dl>
                       <dt>Username:</dt><dd>{customer.name || "-"}</dd>
                       <dt>Email:</dt><dd>{customer.email || "-"}</dd>
+                      <dt>Type:</dt><dd><span className="status-badge status-primary">{customer.customerType || "retail"}</span></dd>
+                      <dt>Credit Limit:</dt><dd>{money(customer.creditLimit || 0)}</dd>
                       <dt>Status:</dt><dd><span className="status-badge status-success">Active</span></dd>
                       <dt>Contact:</dt><dd>{customer.phone || "-"}</dd>
                       <dt>Country:</dt><dd>{customer.state || customer.city || "India"}</dd>
@@ -162,6 +202,7 @@ export default function CustomerOverview() {
                 <div>
                   <h2>Customer Ledger</h2>
                   <p>{money(customer.ledgerBalance || 0)} current balance from customer ledger.</p>
+                  <p>{money(Math.max(0, Number(customer.creditLimit || 0) - Number(customer.ledgerBalance || 0)))} available credit.</p>
                   <Link className="btn" to="/accounting/ledger-list">Open ledger</Link>
                 </div>
                 <i className="bx bx-book"></i>
@@ -175,6 +216,7 @@ export default function CustomerOverview() {
                 <div className="tab-pane fade show active" id="customer-overview-pane" role="tabpanel" tabIndex="0">
                   <div className="customer-metric-grid">
                     <section className="card app-card customer-metric-card"><div className="card-body"><span className="customer-metric-icon text-warning"><i className="bx bx-wallet"></i></span><h2>Account Balance</h2><p><strong>{money(customer.ledgerBalance || 0)}</strong> Ledger</p><small>Current customer ledger balance</small></div></section>
+                    <section className="card app-card customer-metric-card"><div className="card-body"><span className="customer-metric-icon text-primary"><i className="bx bx-credit-card"></i></span><h2>Credit Limit</h2><p><strong>{money(customer.creditLimit || 0)}</strong></p><small>{money(Math.max(0, Number(customer.creditLimit || 0) - Number(customer.ledgerBalance || 0)))} available</small></div></section>
                     <section className="card app-card customer-metric-card"><div className="card-body"><span className="customer-metric-icon text-success"><i className="bx bx-gift"></i></span><h2>Loyalty Program</h2><p><strong>{loyaltyBalance}</strong> points</p><small>{loyaltyEarned} earned, {loyaltyRedeemed} redeemed</small></div></section>
                     <section className="card app-card customer-metric-card"><div className="card-body"><span className="customer-metric-icon text-warning"><i className="bx bx-undo"></i></span><h2>Returns</h2><p><strong>{money(returnedAmount)}</strong></p><small>Returned sale value captured in bills</small></div></section>
                     <section className="card app-card customer-metric-card"><div className="card-body"><span className="customer-metric-icon text-info"><i className="bx bx-receipt"></i></span><h2>Invoices</h2><p><strong>{customerSales.length}</strong> bills</p><small>Sales linked by customer id, phone, or name</small></div></section>
@@ -207,6 +249,48 @@ export default function CustomerOverview() {
                       <nav aria-label="Customer order pagination"><ul className="pagination mb-0"><li className="page-item disabled"><button className="page-link" type="button"><i className="bx bx-chevron-left"></i></button></li><li className="page-item active"><button className="page-link" type="button">1</button></li><li className="page-item disabled"><button className="page-link" type="button"><i className="bx bx-chevron-right"></i></button></li></ul></nav>
                     </div>
                   </section>
+                  <div className="row g-3 mt-1">
+                    <div className="col-12 col-xl-6">
+                      <section className="card app-card app-datatable-card h-100">
+                        <div className="card-header app-card-header"><div><h2>Loyalty Ledger</h2><p>Earn and redeem activity with running balance.</p></div></div>
+                        <div className="table-responsive app-table-wrap">
+                          <table className="table app-table align-middle mb-0">
+                            <thead><tr><th>Date</th><th>Type</th><th>Points</th><th>Balance</th></tr></thead>
+                            <tbody>
+                              {loyaltyLedger.slice(0, 6).length ? loyaltyLedger.slice(0, 6).map((row) => (
+                                <tr key={row._id}>
+                                  <td>{formatDate(row.createdAt)}</td>
+                                  <td><span className={`status-badge ${row.entryType === "redeem" ? "status-warning" : "status-success"}`}>{row.entryType}</span></td>
+                                  <td>{Number(row.points || 0)}</td>
+                                  <td>{Number(row.balanceAfter || 0)}</td>
+                                </tr>
+                              )) : <tr><td colSpan="4" className="text-center text-muted py-4">No loyalty activity yet.</td></tr>}
+                            </tbody>
+                          </table>
+                        </div>
+                      </section>
+                    </div>
+                    <div className="col-12 col-xl-6">
+                      <section className="card app-card app-datatable-card h-100">
+                        <div className="card-header app-card-header"><div><h2>Communication Log</h2><p>WhatsApp, bill sharing, and customer contact history.</p></div></div>
+                        <div className="table-responsive app-table-wrap">
+                          <table className="table app-table align-middle mb-0">
+                            <thead><tr><th>Date</th><th>Channel</th><th>Status</th><th>Message</th></tr></thead>
+                            <tbody>
+                              {communicationHistory.slice(0, 6).length ? communicationHistory.slice(0, 6).map((row) => (
+                                <tr key={row._id}>
+                                  <td>{formatDate(row.createdAt)}</td>
+                                  <td>{row.channel}</td>
+                                  <td><span className={`status-badge ${row.status === "failed" ? "status-danger" : "status-success"}`}>{row.status}</span></td>
+                                  <td>{row.message || row.category || "-"}</td>
+                                </tr>
+                              )) : <tr><td colSpan="4" className="text-center text-muted py-4">No communication history yet.</td></tr>}
+                            </tbody>
+                          </table>
+                        </div>
+                      </section>
+                    </div>
+                  </div>
                 </div>
                 <div className="tab-pane fade" id="customer-security-pane" role="tabpanel" tabIndex="0">
                   <section className="card app-card"><div className="card-header app-card-header"><div><h2>Security</h2><p>Customer access is managed through POS/customer master records.</p></div></div><div className="card-body"><form className="row g-3"><div className="col-12 col-sm-6 col-xl-3"><label className="form-label">Customer Record</label><input type="text" className="form-control" value={customerCode(customer)} readOnly /></div><div className="col-12 col-sm-6 col-xl-3"><label className="form-label">Status</label><input type="text" className="form-control" value="Active" readOnly /></div><div className="col-12 col-sm-6 col-xl-3"><label className="form-label">Last Updated</label><input type="text" className="form-control" value={formatDate(customer.updatedAt)} readOnly /></div><div className="col-12 col-sm-6 col-xl-3"><label className="form-label">Device</label><input type="text" className="form-control" value="POS" readOnly /></div></form></div></section>
@@ -235,6 +319,11 @@ export default function CustomerOverview() {
                 <div className="col-12"><label className="form-label">Name</label><input className="form-control" value={editForm.name} onChange={(event) => setEditForm((current) => ({ ...current, name: event.target.value }))} /></div>
                 <div className="col-12 col-md-6"><label className="form-label">Phone</label><input className="form-control" value={editForm.phone} onChange={(event) => setEditForm((current) => ({ ...current, phone: event.target.value }))} /></div>
                 <div className="col-12 col-md-6"><label className="form-label">Email</label><input className="form-control" type="email" value={editForm.email} onChange={(event) => setEditForm((current) => ({ ...current, email: event.target.value }))} /></div>
+                <div className="col-12 col-md-6"><label className="form-label">Customer Type</label><select className="form-select" value={editForm.customerType} onChange={(event) => setEditForm((current) => ({ ...current, customerType: event.target.value }))}><option value="retail">Retail</option><option value="wholesale">Wholesale</option><option value="vip">VIP</option></select></div>
+                <div className="col-12 col-md-6"><label className="form-label">Credit Limit</label><input className="form-control" type="number" value={editForm.creditLimit} onChange={(event) => setEditForm((current) => ({ ...current, creditLimit: event.target.value }))} /></div>
+                <div className="col-12 col-md-6"><label className="form-label">Loyalty Card No</label><input className="form-control" value={editForm.loyaltyCardNo || (editForm.applyLoyalty ? "Auto on save" : "")} readOnly placeholder="Auto on apply" /></div>
+                <div className="col-12 col-md-6"><label className="form-label">Apply Loyalty</label><label className="form-check d-flex align-items-center gap-2 mt-2"><input className="form-check-input" type="checkbox" checked={Boolean(editForm.applyLoyalty)} onChange={(event) => setEditForm((current) => ({ ...current, applyLoyalty: event.target.checked }))} disabled={Boolean(customer.loyaltyCardNo)} /><span className="form-check-label">Generate loyalty card on save</span></label></div>
+                <div className="col-12 col-md-6"><label className="form-label">Segments</label><input className="form-control" value={editForm.segmentTags} onChange={(event) => setEditForm((current) => ({ ...current, segmentTags: event.target.value }))} placeholder="VIP, Birthday, Wholesale" /></div>
                 <div className="col-12"><label className="form-label">Address Line 1</label><input className="form-control" value={editForm.addressLine1} onChange={(event) => setEditForm((current) => ({ ...current, addressLine1: event.target.value }))} /></div>
                 <div className="col-12"><label className="form-label">Address Line 2</label><input className="form-control" value={editForm.addressLine2} onChange={(event) => setEditForm((current) => ({ ...current, addressLine2: event.target.value }))} /></div>
                 <div className="col-12 col-md-4"><label className="form-label">City</label><input className="form-control" value={editForm.city} onChange={(event) => setEditForm((current) => ({ ...current, city: event.target.value }))} /></div>

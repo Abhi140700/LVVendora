@@ -31,6 +31,7 @@ export const PosBillHeader = ({
     setScannerModalOpen,
     BILL_MODES,
     activeMode,
+    billingMode,
     permissionRules,
     salesSettings,
     activeSession,
@@ -48,7 +49,7 @@ export const PosBillHeader = ({
                     </div>
                     <div className="pos-counter-meta">
                         <span className="metric-pill">{salesSettings.useDayEnd ? (activeSession ? `Session ${activeSession.sessionNo}` : "Session closed") : "Day end disabled"}</span>
-                        <span className="metric-pill">Mode {BILL_MODES.find((mode) => mode.id === activeMode)?.label}</span>
+                        <span className="metric-pill">Current Mode: {billingMode}</span>
                         <span className="metric-pill">Discount limit {permissionRules.maxBillDiscountPercent}%</span>
                     </div>
                 </div>
@@ -78,7 +79,7 @@ export const PosBillHeader = ({
                         </div>
                     </div>
                     <div className="pos-field"><label className="form-label">Date</label><input className="form-control" value={currentDateLabel} readOnly data-enter-nav="true" /></div>
-                    <div className="pos-field"><label className="form-label">Bill No</label><input className="form-control" value={billNo} onChange={(e) => setBillNo(e.target.value)} data-enter-nav="true" /></div>
+                    <div className="pos-field"><label className="form-label">Bill No</label><input className="form-control" value={billNo} onChange={(e) => setBillNo(e.target.value)} data-enter-nav="true" readOnly /></div>
                     <div className="pos-field"><label className="form-label">Last Bill</label><input className="form-control" value={lastBillAmount.toFixed(2)} readOnly data-enter-nav="true" /></div>
                     <div className="pos-field pos-field-salesman">
                         <label className="form-label">Salesman</label>
@@ -218,8 +219,9 @@ export const PosLineItemsTable = ({
 );
 
 export const PosPaymentPanel = ({
-    styles, activeMode, manualAdvanceAmount, setManualAdvanceAmount, selectedExchangeItems, round2, subtotal, discountPercent, discountAmount,
+    styles, activeMode, selectedExchangeItems, round2, subtotal, discountPercent, discountAmount,
     itemDiscountAmount, exchangeAmount, paidAmount, advanceAmount, payableAmount, creditDue, openConfirmationModal, billNo, saving, completeSale,
+    loyaltySummary, loyaltyRedeemPoints, setLoyaltyRedeemPoints, loyaltyRedeemAmount, loyaltySettings, isLoyaltyMember,
 }) => (
     <aside className="card app-card pos-summary pos-payment-panel">
         <div className="card-header app-card-header"><div><p className="section-label mb-1">Bill summary</p><h2>Total Amount</h2></div></div>
@@ -228,15 +230,28 @@ export const PosPaymentPanel = ({
             <div className="summary-line"><span>Item Discount</span><strong>Rs. {itemDiscountAmount.toFixed(2)}</strong></div>
             {discountAmount > 0 ? <div className="summary-line"><span>Bill Discount ({discountPercent}%)</span><strong>Rs. {discountAmount.toFixed(2)}</strong></div> : null}
             <div className="summary-line"><span>Exchange</span><strong>Rs. {exchangeAmount.toFixed(2)}</strong></div>
+            {loyaltyRedeemAmount > 0 ? <div className="summary-line"><span>Loyalty Redeem</span><strong>Rs. {loyaltyRedeemAmount.toFixed(2)}</strong></div> : null}
             <div className="summary-line"><span>Paid</span><strong>Rs. {paidAmount.toFixed(2)}</strong></div>
             <div className="summary-line"><span>Advance</span><strong>Rs. {advanceAmount.toFixed(2)}</strong></div>
             <div className="summary-total"><span>Net Payable</span><strong>Rs. {payableAmount.toFixed(2)}</strong></div>
             <div className="summary-line"><span>Balance / Due</span><strong>Rs. {creditDue.toFixed(2)}</strong></div>
-            {activeMode === "advance" ? (
-                <>
-                    <label className="form-label mt-3">Advance Amount</label>
-                    <input className="form-control" type="text" inputMode="decimal" value={manualAdvanceAmount} onChange={(e) => setManualAdvanceAmount(e.target.value)} data-enter-nav="true" />
-                </>
+            {loyaltySettings?.enabled !== false && isLoyaltyMember ? (
+                <div className="mt-3">
+                    <div className="d-flex justify-content-between align-items-center mb-1">
+                        <label className="form-label mb-0">Redeem Loyalty Points</label>
+                        <small className="text-muted">Balance: {Number(loyaltySummary?.balance || 0)}</small>
+                    </div>
+                    <input
+                        className="form-control"
+                        type="text"
+                        inputMode="numeric"
+                        value={loyaltyRedeemPoints}
+                        onChange={(event) => setLoyaltyRedeemPoints(event.target.value.replace(/[^\d]/g, ""))}
+                        placeholder="Enter points"
+                        data-enter-nav="true"
+                    />
+                    <small className="text-muted">Value: Rs. {Number(loyaltyRedeemAmount || 0).toFixed(2)}</small>
+                </div>
             ) : null}
             {selectedExchangeItems.length > 0 ? <div className="mt-3"><strong>Exchange Offset</strong>{selectedExchangeItems.map((item) => <div key={item.key} className="summary-line"><span>{item.itemName} x {item.qty}</span><strong>Rs. {round2(item.amount).toFixed(2)}</strong></div>)}</div> : null}
             <button className="btn btn_style w-100 mt-3" type="button" onClick={() => openConfirmationModal({ title: "Complete Bill", message: `Save bill ${billNo || ""} for Rs. ${payableAmount.toFixed(2)}?`, confirmLabel: saving ? "Saving..." : "Complete Bill", onConfirm: completeSale })} disabled={saving}><i className="bx bx-check"></i><span>{saving ? "Saving..." : "Complete Bill"}</span></button>

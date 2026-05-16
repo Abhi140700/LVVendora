@@ -159,6 +159,11 @@ const posDraftSchema = new mongoose.Schema({
     enum: ["cashpay", "exchange", "return", "card-upi", "hold", "recall", "credit", "advance"],
     default: "cashpay"
   },
+  billingMode: {
+    type: String,
+    enum: ["CASH", "ADVANCE", "CREDIT"],
+    default: "CASH"
+  },
   customerId: {
     type: mongoose.Schema.Types.ObjectId,
     ref: "Party"
@@ -225,6 +230,23 @@ const posDraftSchema = new mongoose.Schema({
     type: Number,
     default: 0,
     min: 0
+  },
+  advanceDetails: {
+    advanceAmount: { type: Number, default: 0, min: 0 },
+    remainingAmount: { type: Number, default: 0, min: 0 },
+    deliveryStatus: {
+      type: String,
+      enum: ["DELIVERED", "PENDING"],
+      default: "DELIVERED"
+    },
+    expectedDeliveryDate: { type: Date },
+    remarks: { type: String, trim: true }
+  },
+  creditDetails: {
+    creditAmount: { type: Number, default: 0, min: 0 },
+    dueDate: { type: Date },
+    creditDays: { type: Number, default: 0, min: 0 },
+    remarks: { type: String, trim: true }
   },
   paymentBreakdown: [paymentRowSchema],
   exchangeItems: [exchangeItemSchema],

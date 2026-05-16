@@ -7,7 +7,10 @@ export const completeSale = async ({
   createdBy,
   afterCreate
 }) => runInTransaction(async (session) => {
-  const [sale] = await Sales.create([salePayload], { session });
+  const payload = typeof salePayload === "function"
+    ? await salePayload({ session })
+    : salePayload;
+  const [sale] = await Sales.create([payload], { session });
   if (afterCreate) {
     await afterCreate({ sale, session });
   }

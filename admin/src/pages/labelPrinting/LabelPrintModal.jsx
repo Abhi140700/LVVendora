@@ -12,10 +12,13 @@ import {
     buildLabelPrintHtml,
     buildRows,
     calculateMRP,
+    getDisplayName,
     getLabelMetrics,
     getRowKey,
     normalizeBarcodeFormat,
 } from "./labelPrintUtils.jsx";
+
+const getEntityId = (value) => String(value?._id || value || "").trim();
 
 const LabelPrintModal = ({ bill, items = [], onClose, onSuccess, onPrintSuccess }) => {
     const billItems = useMemo(
@@ -57,7 +60,7 @@ const LabelPrintModal = ({ bill, items = [], onClose, onSuccess, onPrintSuccess 
             selectedItem
                 ? history.filter(
                     (entry) =>
-                        String(entry.itemId || "") === String(selectedItem.itemId || ""),
+                        getEntityId(entry.itemId) === getEntityId(selectedItem.itemId),
                 )
                 : [],
         [history, selectedItem],
@@ -80,7 +83,7 @@ const LabelPrintModal = ({ bill, items = [], onClose, onSuccess, onPrintSuccess 
     );
     const companyAcronym = getCompanyAcronym(appSettings.companyName);
     const previewIdentity = `${companyAcronym}/${bill?.billNo || "-"}`;
-    const billPartyName = bill?.party?.name || bill?.partyName || bill?.party || "";
+    const billPartyName = getDisplayName(bill?.partyName, getDisplayName(bill?.party, getDisplayName(bill?.supplier || bill?.supplierAgent, "")));
     const labelMetrics = getLabelMetrics(labelSize);
     const previewLabelDraft = selectedItem
         ? buildLabelDraft({
@@ -363,7 +366,7 @@ const LabelPrintModal = ({ bill, items = [], onClose, onSuccess, onPrintSuccess 
                     designNo: job.designNo || "",
                     qtyText: job.qtyText || `${Number(job.qty || 1)} ${job.unit || "PCS"}`,
                     referenceCode: job.referenceCode || "",
-                    partyName: job.partyName || "Party Name",
+                    partyName: getDisplayName(job.partyName, billPartyName),
                     billNo: bill?.billNo || job.billNo || "",
                 }));
             });
@@ -411,10 +414,6 @@ const LabelPrintModal = ({ bill, items = [], onClose, onSuccess, onPrintSuccess 
                 }, 250);
             };
 
-            setTimeout(() => {
-                if (!settled) finalize(false);
-            }, 5000);
-
             iframe.onload = () => {
                 if (!printWindow || !printWindow.document) {
                     finalize(false);
@@ -422,7 +421,6 @@ const LabelPrintModal = ({ bill, items = [], onClose, onSuccess, onPrintSuccess 
                 }
                 const doc = printWindow.document;
 
-                // WAIT for fonts
                 if (doc.fonts && doc.fonts.ready) {
                     doc.fonts.ready.then(() => {
                         triggerPrint();
@@ -432,6 +430,25 @@ const LabelPrintModal = ({ bill, items = [], onClose, onSuccess, onPrintSuccess 
                 }
 
                 function triggerPrint() {
+                    try {
+                        const barcodeNodes = Array.from(doc.querySelectorAll(".barcode-svg"));
+                        barcodeNodes.forEach((barcodeNode) => {
+                            JsBarcode(barcodeNode, barcodeNode.getAttribute("jsbarcode-value") || "", {
+                                format: barcodeNode.getAttribute("jsbarcode-format") || "CODE128",
+                                displayValue: false,
+                                width: Number(barcodeNode.getAttribute("jsbarcode-width") || labelMetrics.jsBarcodeWidth),
+                                height: Number(barcodeNode.getAttribute("jsbarcode-height") || labelMetrics.barcodeHeight),
+                                margin: 0,
+                                background: "#ffffff",
+                            });
+                        });
+                    } catch (error) {
+                        console.error("Print barcode render failed:", error);
+                        notifyError("Unable to render barcode for printing.");
+                        finalize(false);
+                        return;
+                    }
+
                     const handleAfterPrint = () => {
                         finalize(true);
                     };
@@ -442,6 +459,7 @@ const LabelPrintModal = ({ bill, items = [], onClose, onSuccess, onPrintSuccess 
 
                     printWindow.focus();
                     printWindow.print();
+                    setTimeout(() => finalize(true), 10000);
                 }
             };
         });
@@ -508,18 +526,30 @@ const LabelPrintModal = ({ bill, items = [], onClose, onSuccess, onPrintSuccess 
         return data;
     };
 
-    const buildSinglePrintJob = (row, barcode) => ({
-        ...buildLabelDraft({
+    const buildSinglePrintJob = (row, barcode, historyEntry = null) => {
+        const resolvedBarcode = normalizeBarcodeFormat(
+            appSettings.barcodeFormat,
+            barcode || historyEntry?.barcode || row?.barcode || "",
+        ).value;
+        const resolvedPartyName = getDisplayName(
+            row?.partyName,
+            getDisplayName(row?.party, billPartyName),
+        );
+
+        return {
+            ...buildLabelDraft({
             row,
-            barcode: normalizeBarcodeFormat(appSettings.barcodeFormat, barcode).value,
+            barcode: resolvedBarcode,
             companyName: appSettings.companyName,
             billNo: bill?.billNo,
-            partyName: billPartyName,
-        }),
-        qty: getPrintQuantityForRow(row),
-        copies: 1,
-        partyName: row.partyName || row.party || billPartyName || "Party Name",
-    });
+            partyName: resolvedPartyName,
+            }),
+            barcode: resolvedBarcode,
+            qty: getPrintQuantityForRow(row),
+            copies: 1,
+            partyName: resolvedPartyName,
+        };
+    };
 
     const handlePrint = async () => {
         if (!purchaseSettings.labelPrintingEnabled) {
@@ -593,8 +623,13 @@ const LabelPrintModal = ({ bill, items = [], onClose, onSuccess, onPrintSuccess 
         try {
             setPrinting(true);
             const targetBarcode = selectedHistoryEntry?.barcode || selectedItemHistory?.barcode;
+            const normalizedTargetBarcode = normalizeBarcodeFormat(appSettings.barcodeFormat, targetBarcode).value;
+            if (!normalizedTargetBarcode) {
+                notifyError("Saved barcode is missing for this reprint.");
+                return;
+            }
             const confirmed = await openPrintSheet([
-                buildSinglePrintJob(selectedItem, targetBarcode),
+                buildSinglePrintJob(selectedItem, normalizedTargetBarcode, selectedHistoryEntry || selectedItemHistory),
             ]);
             if (!confirmed) {
                 return;
@@ -647,7 +682,7 @@ const LabelPrintModal = ({ bill, items = [], onClose, onSuccess, onPrintSuccess 
             const saveQueue = [];
             const rowsNeedingFreshBarcode = rows.filter((row) => {
                 const existingHistory = history.find(
-                    (entry) => String(entry.itemId || "") === String(row.itemId || ""),
+                    (entry) => getEntityId(entry.itemId) === getEntityId(row.itemId),
                 );
                 return !(existingHistory?.barcode || row.barcode);
             });
@@ -659,7 +694,7 @@ const LabelPrintModal = ({ bill, items = [], onClose, onSuccess, onPrintSuccess 
 
             rows.forEach((row) => {
                 const existingHistory = history.find(
-                    (entry) => String(entry.itemId || "") === String(row.itemId || ""),
+                    (entry) => getEntityId(entry.itemId) === getEntityId(row.itemId),
                 );
                 const barcode = existingHistory?.barcode || row.barcode || String(newBarcodeCursor++);
                 printJobs.push(buildSinglePrintJob(row, barcode));

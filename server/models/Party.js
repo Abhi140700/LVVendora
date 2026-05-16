@@ -13,6 +13,39 @@ const partySchema = new mongoose.Schema({
     default: "party",
     index: true
   },
+  customerType: {
+    type: String,
+    enum: ["retail", "wholesale", "vip"],
+    default: "retail",
+    index: true
+  },
+  creditLimit: {
+    type: Number,
+    default: 0,
+    min: 0
+  },
+  segmentTags: {
+    type: [String],
+    default: []
+  },
+  loyaltyCardNo: {
+    type: String,
+    trim: true,
+    index: true
+  },
+  loyaltyAppliedAt: {
+    type: Date
+  },
+  loyaltyEnrollmentFee: {
+    type: Number,
+    default: 0,
+    min: 0
+  },
+  loyaltyOpeningPoints: {
+    type: Number,
+    default: 0,
+    min: 0
+  },
   salesmanCode: {
     type: Number,
     sparse: true,

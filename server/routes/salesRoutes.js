@@ -7,6 +7,7 @@ import {
   dayEndPosSession,
   deleteSalesCustomer,
   getLoyaltySummary,
+  getCustomerCommunicationHistory,
   getNextSalesBillNo,
   getSalesCustomers,
   getSales,
@@ -35,6 +36,7 @@ router.get("/", protect, getSales);
 router.get("/workbench", protect, authorizeRoles("admin", "sales", "manager", "accountant"), getSalesWorkbench);
 router.get("/next-bill-no", protect, authorizeRoles("admin", "sales", "manager", "accountant"), getNextSalesBillNo);
 router.get("/loyalty/:customerPhone", protect, getLoyaltySummary);
+router.get("/customers/communication/history", protect, authorizeRoles("admin", "sales", "manager", "accountant"), getCustomerCommunicationHistory);
 router.post("/cash-adjustment/preview", protect, authorizeRoles("superadmin"), previewCashSalesAdjustment);
 router.post("/cash-adjustment/process", protect, authorizeRoles("superadmin"), processCashSalesAdjustment);
 router.get("/cash-adjustment/history", protect, authorizeRoles("superadmin"), getCashSalesAdjustmentHistory);

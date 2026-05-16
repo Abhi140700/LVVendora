@@ -37,6 +37,23 @@ export function escapeHtml(value) {
         .replace(/'/g, "&#39;");
 }
 
+export function getDisplayName(value, fallback = "") {
+    if (value === null || value === undefined) return fallback;
+    if (typeof value === "string" || typeof value === "number" || typeof value === "boolean") {
+        const text = String(value).trim();
+        return text && text.toLowerCase() !== "partyname" && text.toLowerCase() !== "party name"
+            ? text
+            : fallback;
+    }
+    if (typeof value === "object") {
+        return getDisplayName(
+            value.name || value.partyName || value.displayName || value.label || value.title || value.companyName || value._id,
+            fallback,
+        );
+    }
+    return fallback;
+}
+
 export function getDiscountPercent(mrp, saleRate) {
     const mrpValue = Number(mrp || 0);
     const saleValue = Number(saleRate || 0);
@@ -160,7 +177,7 @@ export function buildLabelDraft({ row, barcode, companyName, billNo, partyName }
     const normalizedBillNo = billNo || "-";
     const normalizedUnit = normalizeUnit(row?.unit || "PCS");
     const effectiveQty = Number(row?.qty || 1);
-    const resolvedPartyName = partyName || row?.partyName || row?.party || "";
+    const resolvedPartyName = getDisplayName(partyName, getDisplayName(row?.partyName, getDisplayName(row?.party, "")));
 
     return {
         productName: row?.name || row?.productName || "",
@@ -218,14 +235,14 @@ export function buildLabelPrintHtml({
                 Number(label.mrp || 0) === Number(label.saleRate || 0);
             const priceMarkup = showSinglePrice
                 ? `
-                <strong>MRP :</strong>
-                <div>
+                <div class="label-price-line">
+                    <strong>MRP</strong>
                     <span>${escapeHtml(formatCurrency(label.mrp))}</span>
                 </div>
                 `
                 : `
-                <strong>MRP :</strong>
-                <div>
+                <div class="label-price-line">
+                    <strong>MRP</strong>
                     <span>${escapeHtml(formatCurrency(label.mrp))}</span>
                 </div>
                 `;
@@ -233,13 +250,13 @@ export function buildLabelPrintHtml({
                 ? ""
                 : `
                 <div class="shipping-address to">
-                    <strong>Sale Rate :</strong>
-                    <div>
+                    <div class="label-price-line">
+                        <strong>Sale Rate</strong>
                         <span>${escapeHtml(formatCurrency(label.saleRate))}</span>
                     </div>
                 </div>
                 `;
-            const partyName = label.partyName || label.party || "Party Name";
+            const partyName = getDisplayName(label.partyName, getDisplayName(label.party, getDisplayName(companyName, "")));
             const displayBillNo = label.billNo || billNo || "BILL-0001";
             return `
 <div class="label ${index < labels.length - 1 ? "page-break" : ""}">
@@ -408,11 +425,12 @@ body {
 
 .shipping-address {
     display: grid;
-    grid-template-columns: auto 1fr;
-    gap: 0.32mm;
+    grid-template-columns: minmax(0, 1fr);
+    align-items: stretch;
+    gap: 0;
     padding: 0.42mm 0.55mm;
     border-bottom: 0.14mm solid #111;
-    font-size: 0.52em;
+    font-size: 0.78em;
     line-height: 1.08;
     box-sizing: border-box;
 }
@@ -432,7 +450,7 @@ body {
 }
 
 .shipping-address strong {
-    font-size: 0.65em;
+    font-size: 0.72em;
     font-weight: 900;
     white-space: nowrap;
 }
@@ -440,6 +458,29 @@ body {
 .shipping-address span {
     display: block;
     font-weight: 800;
+}
+
+.label-price-line {
+    display: grid;
+    grid-template-columns: minmax(8.8mm, auto) minmax(0, 1fr);
+    align-items: center;
+    gap: 0.5mm;
+    width: 100%;
+    min-width: 0;
+}
+
+.label-price-line strong {
+    font-size: 0.75em;
+    line-height: 1;
+}
+
+.label-price-line span {
+    min-width: 0;
+    font-size: 0.76em;
+    font-weight: 900;
+    line-height: 1;
+    white-space: nowrap;
+    text-align: right;
 }
 
 .shipping-qr-box {
@@ -548,24 +589,8 @@ body {
 
 .border-0 { border: 0 !important; }
 </style>
-    <script src="https://cdn.jsdelivr.net/npm/jsbarcode@3.11.6/dist/JsBarcode.all.min.js"></script>
 </head>
 <body>${labelMarkup}
-<script>
-    function renderBarcodes() {
-        try {
-            JsBarcode(".barcode-svg").init();
-        } catch (e) {
-            console.error("Barcode render failed", e);
-            setTimeout(renderBarcodes, 200);
-        }
-    }
-    if (document.readyState === "complete") {
-        renderBarcodes();
-    } else {
-        window.addEventListener("load", renderBarcodes);
-    }
-</script>
 </body>
 </html>`;
 }

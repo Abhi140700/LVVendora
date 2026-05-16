@@ -528,11 +528,12 @@ h6 {
 
 .shipping-address {
   display: grid;
-  grid-template-columns: auto 1fr;
-  gap: 0.32rem;
+  grid-template-columns: minmax(0, 1fr);
+  align-items: stretch;
+  gap: 0;
   padding: 0.42rem 0.55rem;
   border-bottom: 0.14rem solid #111;
-  font-size: 0.52rem;
+  font-size: 0.78rem;
   line-height: 1.08;
 }
 
@@ -551,7 +552,7 @@ h6 {
 }
 
 .shipping-address strong {
-  font-size: 0.65rem;
+  font-size: 0.72rem;
   font-weight: 900;
   white-space: nowrap;
 }
@@ -559,6 +560,29 @@ h6 {
 .shipping-address span {
   display: block;
   font-weight: 800;
+}
+
+.label-print-modal__price-line {
+  display: grid;
+  grid-template-columns: minmax(3.8rem, auto) minmax(0, 1fr);
+  align-items: center;
+  gap: 0.5rem;
+  width: 100%;
+  min-width: 0;
+}
+
+.label-print-modal__price-line strong {
+  font-size: 0.75rem;
+  line-height: 1;
+}
+
+.label-print-modal__price-line span {
+  min-width: 0;
+  font-size: 0.76rem;
+  font-weight: 900;
+  line-height: 1;
+  white-space: nowrap;
+  text-align: right;
 }
 
 .shipping-qr-box {
@@ -951,8 +975,8 @@ h6 {
 
 .label-print-modal__sheet-pricing {
   display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 0.5rem;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 0;
   font-weight: 900;
 }
 

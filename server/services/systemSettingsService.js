@@ -2,6 +2,10 @@ import SystemSettings from "../models/SystemSettings.js";
 
 export const DEFAULT_SYSTEM_SETTINGS = {
   companyName: "LVVendora",
+  companyTagline: "Fashion & Tradition",
+  companyAddress: "26/A SHANIWAR PETH KARAD.",
+  companyPhone: "7020447205, 9604249177, 8208442643",
+  gstin: "27AAFFL3196B1ZF",
   billingCounter: "Main Counter",
   gstEnabled: true,
   roundingRule: "nearest-rupee",
@@ -16,6 +20,17 @@ export const DEFAULT_SYSTEM_SETTINGS = {
   },
   ui: {
     palette: "lime"
+  },
+  loyalty: {
+    enabled: true,
+    earnPerAmount: 100,
+    pointsPerStep: 1,
+    redeemValuePerPoint: 1,
+    minRedeemPoints: 0,
+    maxRedeemPercent: 20,
+    enrollmentFee: 0,
+    enrollmentBonusPoints: 0,
+    cardSequencePadding: 4
   },
   sales: {
     hideGstInPrint: false,
@@ -41,6 +56,10 @@ export const normalizeSystemSettings = (doc = {}) => ({
   ui: {
     ...DEFAULT_SYSTEM_SETTINGS.ui,
     ...(doc?.ui || {})
+  },
+  loyalty: {
+    ...DEFAULT_SYSTEM_SETTINGS.loyalty,
+    ...(doc?.loyalty || {})
   },
   sales: {
     ...DEFAULT_SYSTEM_SETTINGS.sales,

@@ -6,6 +6,10 @@ export const APP_SETTINGS_UPDATED_EVENT = "erp-app-settings-updated";
 
 export const DEFAULT_APP_SETTINGS = {
     companyName: "LVVendora",
+    companyTagline: "Fashion & Tradition",
+    companyAddress: "26/A SHANIWAR PETH KARAD.",
+    companyPhone: "7020447205, 9604249177, 8208442643",
+    gstin: "27AAFFL3196B1ZF",
     billingCounter: "Main Counter",
     thermalPrinter: "Zebra ZD230",
     labelPrinter: "TSC TE244",
@@ -14,6 +18,17 @@ export const DEFAULT_APP_SETTINGS = {
     barcodeFormat: "CODE128",
     ui: {
         palette: "lime",
+    },
+    loyalty: {
+        enabled: true,
+        earnPerAmount: 100,
+        pointsPerStep: 1,
+        redeemValuePerPoint: 1,
+        minRedeemPoints: 0,
+        maxRedeemPercent: 20,
+        enrollmentFee: 0,
+        enrollmentBonusPoints: 0,
+        cardSequencePadding: 4,
     },
     sales: {
         useDayEnd: true,
@@ -67,12 +82,17 @@ const mergeSettings = (parsed = {}) => ({
     ...DEFAULT_APP_SETTINGS,
     ...parsed,
     ui: { ...DEFAULT_APP_SETTINGS.ui, ...(parsed.ui || {}) },
+    loyalty: { ...DEFAULT_APP_SETTINGS.loyalty, ...(parsed.loyalty || {}) },
     sales: { ...DEFAULT_APP_SETTINGS.sales, ...(parsed.sales || {}) },
     purchase: { ...DEFAULT_APP_SETTINGS.purchase, ...(parsed.purchase || {}) },
 });
 
 const mapServerSettingsToAppSettings = (settings = {}, fallbackSettings = {}) => mergeSettings({
     companyName: settings.companyName ?? fallbackSettings.companyName ?? DEFAULT_APP_SETTINGS.companyName,
+    companyTagline: settings.companyTagline ?? fallbackSettings.companyTagline ?? DEFAULT_APP_SETTINGS.companyTagline,
+    companyAddress: settings.companyAddress ?? fallbackSettings.companyAddress ?? DEFAULT_APP_SETTINGS.companyAddress,
+    companyPhone: settings.companyPhone ?? fallbackSettings.companyPhone ?? DEFAULT_APP_SETTINGS.companyPhone,
+    gstin: settings.gstin ?? settings.gstNo ?? fallbackSettings.gstin ?? DEFAULT_APP_SETTINGS.gstin,
     billingCounter: settings.billingCounter ?? fallbackSettings.billingCounter ?? DEFAULT_APP_SETTINGS.billingCounter,
     barcodeFormat: settings.barcodeFormat,
     thermalPrinter: settings.printConfig?.thermalPrinter,
@@ -81,6 +101,11 @@ const mapServerSettingsToAppSettings = (settings = {}, fallbackSettings = {}) =>
     labelSize: settings.printConfig?.labelSize,
     ui: {
         palette: settings.ui?.palette ?? fallbackSettings.ui?.palette ?? DEFAULT_APP_SETTINGS.ui.palette,
+    },
+    loyalty: {
+        ...DEFAULT_APP_SETTINGS.loyalty,
+        ...(fallbackSettings.loyalty || {}),
+        ...(settings.loyalty || {}),
     },
     sales: {
         hideGstInPrint: settings.sales?.hideGstInPrint ?? DEFAULT_APP_SETTINGS.sales.hideGstInPrint,
@@ -98,6 +123,10 @@ const mapServerSettingsToAppSettings = (settings = {}, fallbackSettings = {}) =>
 
 const mapAppSettingsToServerSettings = (settings = {}) => ({
     companyName: settings.companyName,
+    companyTagline: settings.companyTagline,
+    companyAddress: settings.companyAddress,
+    companyPhone: settings.companyPhone,
+    gstin: settings.gstin,
     billingCounter: settings.billingCounter,
     barcodeFormat: settings.barcodeFormat,
     paymentModes: ["Cash", "Card", "UPI", "Bank"],
@@ -109,6 +138,17 @@ const mapAppSettingsToServerSettings = (settings = {}) => ({
     },
     ui: {
         palette: settings.ui?.palette,
+    },
+    loyalty: {
+        enabled: settings.loyalty?.enabled,
+        earnPerAmount: settings.loyalty?.earnPerAmount,
+        pointsPerStep: settings.loyalty?.pointsPerStep,
+        redeemValuePerPoint: settings.loyalty?.redeemValuePerPoint,
+        minRedeemPoints: settings.loyalty?.minRedeemPoints,
+        maxRedeemPercent: settings.loyalty?.maxRedeemPercent,
+        enrollmentFee: settings.loyalty?.enrollmentFee,
+        enrollmentBonusPoints: settings.loyalty?.enrollmentBonusPoints,
+        cardSequencePadding: settings.loyalty?.cardSequencePadding,
     },
     sales: {
         hideGstInPrint: settings.sales?.hideGstInPrint,

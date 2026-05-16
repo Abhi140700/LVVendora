@@ -1,5 +1,6 @@
 import Party from "../models/Party.js";
 import Sales from "../models/Sales.js";
+import CustomerCommunicationLog from "../models/CustomerCommunicationLog.js";
 import {
   broadcastWhatsAppMessage,
   ensureWhatsAppClient,
@@ -83,12 +84,45 @@ export const sendBillOnWhatsApp = async (req, res) => {
       });
     }
 
-    await sendWhatsAppMessage({
-      phone: targetPhone,
-      message: buildInvoiceMessage(sale)
-    });
+    try {
+      await sendWhatsAppMessage({
+        phone: targetPhone,
+        message: buildInvoiceMessage(sale)
+      });
 
-    await Sales.findByIdAndUpdate(sale._id, { whatsappSentAt: new Date() });
+      await Sales.findByIdAndUpdate(sale._id, { whatsappSentAt: new Date() });
+      await CustomerCommunicationLog.create({
+        customerId: sale.customerId,
+        customerName: sale.customer,
+        customerPhone: targetPhone,
+        channel: "whatsapp",
+        direction: "outbound",
+        category: "bill",
+        status: "success",
+        saleId: sale._id,
+        billNo: sale.billNo,
+        invoiceNo: sale.invoiceNo,
+        message: "Bill sent on WhatsApp",
+        createdBy: req.user?._id
+      });
+    } catch (error) {
+      await CustomerCommunicationLog.create({
+        customerId: sale.customerId,
+        customerName: sale.customer,
+        customerPhone: targetPhone,
+        channel: "whatsapp",
+        direction: "outbound",
+        category: "bill",
+        status: "failed",
+        saleId: sale._id,
+        billNo: sale.billNo,
+        invoiceNo: sale.invoiceNo,
+        message: "Bill WhatsApp failed",
+        error: error.message,
+        createdBy: req.user?._id
+      });
+      throw error;
+    }
 
     return res.status(200).json({
       success: true,

@@ -662,6 +662,12 @@ export const getCashBookReport = async (req, res) => {
         party: sale.customer || "Walk-in",
         amount: round2(sale.advanceAmount)
       })),
+      "CREDIT SALES": sales.filter((sale) => round2(sale.creditDue) > 0 || sale.billingMode === "CREDIT").map((sale) => ({
+        refNo: sale.billNo || sale.displayBillNo || sale.invoiceNo,
+        party: sale.customer || "Walk-in",
+        amount: round2(sale.creditDue || sale.totalAmount),
+        salesAmt: round2(sale.creditDue || sale.totalAmount)
+      })),
       "RECEIPT": Object.entries(receiptBreakdown).map(([paymentMode, amount]) => ({
         paymentMode,
         salesAmt: round2(amount)
@@ -717,12 +723,17 @@ export const getCashBookReport = async (req, res) => {
 
     const transactionRows = [
       ...sales.map((sale) => ({
-        type: "sale",
+        type: sale.billingMode === "CREDIT"
+          ? "credit-sale"
+          : sale.billingMode === "ADVANCE"
+            ? "advance-sale"
+            : "cash-sale",
         date: sale.saleDate,
         refNo: sale.billNo || sale.invoiceNo,
         party: sale.customer || "Walk-in",
-        mode: sale.billType,
+        mode: sale.billingMode || sale.billType,
         amount: round2(sale.totalAmount),
+        outstanding: round2(sale.creditDue),
         cashComponent: round2((sale.paymentBreakdown || [])
           .filter((row) => String(row.mode || "").toLowerCase() === "cash")
           .reduce((sum, row) => sum + round2(row.amount), 0))
@@ -734,6 +745,7 @@ export const getCashBookReport = async (req, res) => {
         party: entry.customerName || "-",
         mode: entry.paymentMode || entry.direction,
         amount: round2(entry.amount),
+        outstanding: 0,
         cashComponent: round2(formatPaymentMode(entry.paymentMode || entry.referenceNo) === "Cash"
           ? (entry.direction === "debit" ? -entry.amount : entry.amount)
           : 0)
@@ -745,6 +757,7 @@ export const getCashBookReport = async (req, res) => {
         party: entry.category || entry.accountLabel || "-",
         mode: entry.paymentMode || "-",
         amount: round2(entry.amount),
+        outstanding: 0,
         cashComponent: round2(formatPaymentMode(entry.paymentMode) === "Cash"
           ? (entry.direction === "in" ? entry.amount : -entry.amount)
           : 0)

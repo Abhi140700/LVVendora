@@ -1,4 +1,6 @@
 import CustomerLedger from "../models/CustomerLedger.js";
+import CustomerLoyaltyLedger from "../models/CustomerLoyaltyLedger.js";
+import CustomerCommunicationLog from "../models/CustomerCommunicationLog.js";
 import Inventory from "../models/Inventory.js";
 import Party from "../models/Party.js";
 import POSDraft from "../models/POSDraft.js";
@@ -11,7 +13,9 @@ import { getWhatsAppStatus } from "../services/whatsappService.js";
 import { calculateExpectedCash } from "../utils/posSession.js";
 import { getRoleRules } from "../utils/permissionRules.js";
 import { getSystemSettings } from "../services/systemSettingsService.js";
+import { enrollCustomerInLoyalty } from "../services/loyaltyService.js";
 import { completeSale } from "../services/salesService.js";
+import { getNextBillNo as getNextModeBillNo, normalizeBillingMode } from "../services/billCounterService.js";
 import { deductInventoryItems, restockInventoryItems } from "../services/inventoryService.js";
 import { recomputeSaleTotals } from "../utils/salesValidation.js";
 import { runInTransaction } from "../utils/transaction.js";
@@ -26,8 +30,31 @@ const clampNumber = (value, fallback = 0) => {
 };
 
 const round2 = (value) => Math.round(clampNumber(value) * 100) / 100;
-const calculateEarnedPoints = (totalAmount) => Math.floor(clampNumber(totalAmount) / 100);
+const calculateEarnedPoints = (totalAmount, loyaltySettings = {}) => {
+  if (loyaltySettings.enabled === false) {
+    return 0;
+  }
+  const earnPerAmount = Math.max(1, clampNumber(loyaltySettings.earnPerAmount, 100));
+  const pointsPerStep = Math.max(0, clampNumber(loyaltySettings.pointsPerStep, 1));
+  return Math.floor(clampNumber(totalAmount) / earnPerAmount) * pointsPerStep;
+};
+const calculateRedeemAmount = (points = 0, loyaltySettings = {}) => round2(
+  Math.max(0, clampNumber(points)) * Math.max(0, clampNumber(loyaltySettings.redeemValuePerPoint, 1))
+);
+const getLoyaltyBalanceForCustomer = async ({ customerId, customerPhone }, session = null) => {
+  const filter = [];
+  if (customerId) filter.push({ customerId });
+  if (normalizeText(customerPhone)) filter.push({ customerPhone: normalizeText(customerPhone) });
+  if (!filter.length) return 0;
+
+  const rows = await CustomerLoyaltyLedger.find({ $or: filter }).session(session).select("points").lean();
+  return Math.max(0, rows.reduce((sum, row) => sum + clampNumber(row.points), 0));
+};
 const normalizeText = (value = "") => String(value).trim();
+const normalizeTags = (value = []) => {
+  const rawTags = Array.isArray(value) ? value : String(value || "").split(",");
+  return [...new Set(rawTags.map((tag) => normalizeText(tag)).filter(Boolean))];
+};
 const buildAcronym = (value = "") => normalizeText(value)
   .split(/\s+/)
   .filter(Boolean)
@@ -109,14 +136,51 @@ const sanitizePaymentRows = (rows = []) => rows
 
 const buildFinalPaymentBreakdown = (billType, paymentBreakdown, payableAmount) => {
   if (billType === "cashpay") {
-    return payableAmount > 0 ? [{ mode: "Cash", amount: round2(payableAmount), reference: "" }] : [];
-  }
-
-  if (billType === "credit") {
-    return [];
+    return paymentBreakdown.length > 0
+      ? paymentBreakdown
+      : (payableAmount > 0 ? [{ mode: "Cash", amount: round2(payableAmount), reference: "" }] : []);
   }
 
   return paymentBreakdown;
+};
+
+const getBillingModeFromBillType = (billType = "cashpay", requestedMode = "") => {
+  if (requestedMode) return normalizeBillingMode(requestedMode);
+  if (billType === "advance") return "ADVANCE";
+  if (billType === "credit") return "CREDIT";
+  return "CASH";
+};
+
+const buildPaymentSummary = ({ paymentBreakdown = [], billingMode = "CASH", payableAmount = 0, creditDue = 0 }) => {
+  const summary = paymentBreakdown.reduce((totals, row) => {
+    const mode = normalizeText(row.mode).toLowerCase();
+    const amount = round2(row.amount);
+    if (mode === "cash") totals.cash += amount;
+    else if (mode === "card") totals.card += amount;
+    else if (mode === "upi") totals.upi += amount;
+    return totals;
+  }, {
+    cash: 0,
+    card: 0,
+    upi: 0,
+    advanceUsed: 0,
+    creditAmount: 0,
+    receivedAmount: 0,
+    balanceAmount: 0
+  });
+
+  summary.receivedAmount = round2(paymentBreakdown.reduce((sum, row) => sum + round2(row.amount), 0));
+  summary.balanceAmount = round2(Math.max(0, creditDue));
+  summary.creditAmount = billingMode === "CREDIT" ? summary.balanceAmount : 0;
+  summary.advanceUsed = billingMode === "ADVANCE" ? summary.receivedAmount : 0;
+  return summary;
+};
+
+const getPaymentStatus = ({ billingMode = "CASH", payableAmount = 0, receivedAmount = 0, balanceAmount = 0 }) => {
+  if (billingMode === "CASH") return "PAID";
+  if (round2(balanceAmount) <= 0 && round2(receivedAmount) >= round2(payableAmount)) return "PAID";
+  if (round2(receivedAmount) > 0) return "PARTIAL";
+  return "PENDING";
 };
 
 const isMeaningfulDraft = (payload = {}) => {
@@ -134,24 +198,17 @@ const isMeaningfulDraft = (payload = {}) => {
 
 const getNextInvoiceNo = async (saleDate = new Date()) => {
   const stamp = buildDateStamp(saleDate);
-  const { start, end } = buildDayRange(saleDate);
-  const count = await Sales.countDocuments({
-    saleDate: { $gte: start, $lte: end }
-  });
-  return `INV-${stamp}-${String(count + 1).padStart(3, "0")}`;
+  const prefix = `INV-${stamp}-`;
+  const sales = await Sales.find({ invoiceNo: new RegExp(`^${prefix}\\d+$`) }).select("invoiceNo").lean();
+  const nextNumber = sales
+    .map((entry) => Number(String(entry.invoiceNo || "").split("-").pop() || 0))
+    .reduce((max, value) => (value > max ? value : max), 0) + 1;
+  return `${prefix}${String(nextNumber).padStart(3, "0")}`;
 };
 
-const getNextBillNo = async () => {
-  const [sales, drafts] = await Promise.all([
-    Sales.find({ billNo: new RegExp(`^${BILL_PREFIX}/\\d+$`) }).select("billNo").lean(),
-    POSDraft.find({ billNo: new RegExp(`^${BILL_PREFIX}/\\d+$`) }).select("billNo").lean()
-  ]);
-
-  const nextNumber = [...sales, ...drafts]
-    .map((entry) => Number(String(entry.billNo || "").split("/")[1] || 0))
-    .reduce((max, value) => (value > max ? value : max), 0) + 1;
-
-  return `${BILL_PREFIX}/${nextNumber}`;
+const getNextBillNo = async (mode = "CASH", saleDate = new Date(), companyName = COMPANY_NAME) => {
+  const counter = await getNextModeBillNo({ mode, saleDate, companyName });
+  return counter.displayBillNo;
 };
 
 const getNextSessionNo = async (openedAt = new Date()) => {
@@ -165,8 +222,9 @@ const buildDraftPayload = async (payload = {}, userId) => {
   const saleDate = payload.saleDate ? new Date(payload.saleDate) : new Date();
 
   return {
-    billNo: normalizeText(payload.billNo) || await getNextBillNo(saleDate),
+    billNo: normalizeText(payload.billNo) || await getNextBillNo(payload.billingMode || payload.billType || "CASH", saleDate),
     billType: BILL_TYPES.includes(payload.billType) ? payload.billType : "cashpay",
+    billingMode: getBillingModeFromBillType(payload.billType, payload.billingMode),
     customerId: payload.customerId || undefined,
     customer: normalizeText(payload.customer),
     customerPhone: normalizeText(payload.customerPhone),
@@ -182,6 +240,8 @@ const buildDraftPayload = async (payload = {}, userId) => {
     payableAmount: round2(payload.payableAmount),
     advanceAmount: round2(payload.advanceAmount),
     creditDue: round2(payload.creditDue),
+    advanceDetails: payload.advanceDetails || undefined,
+    creditDetails: payload.creditDetails || undefined,
     paymentBreakdown: sanitizePaymentRows(payload.paymentBreakdown),
     exchangeItems: Array.isArray(payload.exchangeItems) ? payload.exchangeItems.map((item) => ({
       saleId: item.saleId || undefined,
@@ -225,6 +285,12 @@ const upsertCustomer = async ({
   location,
   dateOfBirth,
   anniversary,
+  loyaltyCardNo,
+  customerType,
+  creditLimit,
+  segmentTags,
+  applyLoyalty,
+  createdBy,
   deliveryInfo,
   note,
   session = null
@@ -251,6 +317,8 @@ const upsertCustomer = async ({
     existing = await Party.findOne({ partyType: "customer", name: normalizedName }).session(session);
   }
 
+  const systemSettings = applyLoyalty ? await getSystemSettings() : null;
+
   if (existing) {
     const duplicateByName = normalizedName
       ? await Party.findOne({
@@ -273,9 +341,17 @@ const upsertCustomer = async ({
     targetCustomer.location = normalizeText(location) || targetCustomer.location;
     targetCustomer.dateOfBirth = dateOfBirth || targetCustomer.dateOfBirth;
     targetCustomer.anniversary = anniversary || targetCustomer.anniversary;
+    targetCustomer.loyaltyCardNo = normalizeText(loyaltyCardNo) || targetCustomer.loyaltyCardNo;
+    targetCustomer.customerType = ["retail", "wholesale", "vip"].includes(customerType) ? customerType : targetCustomer.customerType;
+    targetCustomer.creditLimit = Math.max(0, clampNumber(creditLimit, targetCustomer.creditLimit || 0));
+    const nextSegmentTags = normalizeTags(segmentTags);
+    if (nextSegmentTags.length) targetCustomer.segmentTags = nextSegmentTags;
     targetCustomer.addressLine1 = deliveryInfo || targetCustomer.addressLine1;
     targetCustomer.notes = note || targetCustomer.notes;
     await targetCustomer.save({ session });
+    if (applyLoyalty) {
+      await enrollCustomerInLoyalty({ customer: targetCustomer, settings: systemSettings, createdBy, session });
+    }
     return targetCustomer;
   }
 
@@ -290,10 +366,17 @@ const upsertCustomer = async ({
       location: normalizeText(location),
       dateOfBirth: dateOfBirth || undefined,
       anniversary: anniversary || undefined,
+      loyaltyCardNo: normalizeText(loyaltyCardNo) || undefined,
+      customerType: ["retail", "wholesale", "vip"].includes(customerType) ? customerType : "retail",
+      creditLimit: Math.max(0, clampNumber(creditLimit)),
+      segmentTags: normalizeTags(segmentTags),
       partyType: "customer",
       addressLine1: deliveryInfo,
       notes: note
     }], { session });
+    if (applyLoyalty) {
+      await enrollCustomerInLoyalty({ customer: created[0], settings: systemSettings, createdBy, session });
+    }
     return created[0];
   } catch (error) {
     if (error?.code === 11000) {
@@ -310,9 +393,17 @@ const upsertCustomer = async ({
         duplicateCustomer.location = normalizeText(location) || duplicateCustomer.location;
         duplicateCustomer.dateOfBirth = dateOfBirth || duplicateCustomer.dateOfBirth;
         duplicateCustomer.anniversary = anniversary || duplicateCustomer.anniversary;
+        duplicateCustomer.loyaltyCardNo = normalizeText(loyaltyCardNo) || duplicateCustomer.loyaltyCardNo;
+        duplicateCustomer.customerType = ["retail", "wholesale", "vip"].includes(customerType) ? customerType : duplicateCustomer.customerType;
+        duplicateCustomer.creditLimit = Math.max(0, clampNumber(creditLimit, duplicateCustomer.creditLimit || 0));
+        const nextSegmentTags = normalizeTags(segmentTags);
+        if (nextSegmentTags.length) duplicateCustomer.segmentTags = nextSegmentTags;
         duplicateCustomer.addressLine1 = deliveryInfo || duplicateCustomer.addressLine1;
         duplicateCustomer.notes = note || duplicateCustomer.notes;
         await duplicateCustomer.save({ session });
+        if (applyLoyalty) {
+          await enrollCustomerInLoyalty({ customer: duplicateCustomer, settings: systemSettings, createdBy, session });
+        }
         return duplicateCustomer;
       }
     }
@@ -449,13 +540,15 @@ const validateSettlement = ({
   subtotal,
   discountAmount,
   exchangeAmount,
-  advanceAmount,
   creditDue
 }) => {
   const payable = round2(Math.max(0, subtotal - discountAmount - exchangeAmount));
   const paidAmount = round2((paymentBreakdown || []).reduce((sum, row) => sum + clampNumber(row.amount), 0));
-  const normalizedAdvance = round2(advanceAmount);
-  const totalSettled = round2(paidAmount + normalizedAdvance);
+  const normalizedAdvance = billType === "advance"
+    ? round2((paymentBreakdown || [])
+      .filter((row) => normalizeText(row.mode).toLowerCase() !== "loyalty")
+      .reduce((sum, row) => sum + clampNumber(row.amount), 0))
+    : 0;
   const customerRequired = ["credit", "advance"].includes(billType);
 
   if (customerRequired && !normalizeText(customer)) {
@@ -463,7 +556,7 @@ const validateSettlement = ({
   }
 
   if (billType === "cashpay" || billType === "card-upi" || billType === "return") {
-    if (Math.abs(totalSettled - payable) > 0.01) {
+    if (Math.abs(paidAmount - payable) > 0.01) {
       throw new Error("Full payment is required for the selected bill mode");
     }
   }
@@ -473,22 +566,22 @@ const validateSettlement = ({
   }
 
   if (billType === "credit") {
-    if (totalSettled > payable + 0.01) {
+    if (paidAmount > payable + 0.01) {
       throw new Error("Credit bill payments cannot exceed the payable total");
     }
   }
 
   if (billType === "advance") {
-    if (normalizedAdvance <= 0 && paidAmount <= 0) {
+    if (paidAmount <= 0) {
       throw new Error("Advance amount is required for advance bills");
     }
-    if (totalSettled > payable + 0.01) {
+    if (paidAmount > payable + 0.01) {
       throw new Error("Advance bill settlement cannot exceed the payable total");
     }
   }
 
   const computedCreditDue = billType === "credit" || billType === "advance"
-    ? round2(Math.max(0, payable - totalSettled))
+    ? round2(Math.max(0, payable - paidAmount))
     : 0;
 
   if ((billType === "credit" || billType === "advance") && Math.abs(round2(creditDue) - computedCreditDue) > 0.01) {
@@ -607,8 +700,6 @@ const createLedgerEntries = async ({
   customer,
   customerPhone,
   customerId,
-  paidAmount,
-  advanceAmount,
   creditDue,
   exchangeAmount,
   createdBy,
@@ -636,22 +727,6 @@ const createLedgerEntries = async ({
     });
   }
 
-  if (advanceAmount > 0) {
-    entries.push({
-      customerId,
-      customerName: customer,
-      customerPhone,
-      entryType: "advance-sale",
-      direction: "credit",
-      amount: round2(advanceAmount),
-      saleId: sale._id,
-      billNo: sale.billNo,
-      referenceNo: sale.referenceNo,
-      note: "Advance received",
-      createdBy
-    });
-  }
-
   if (sale.billType === "exchange" && exchangeAmount > 0) {
     entries.push({
       customerId,
@@ -668,38 +743,79 @@ const createLedgerEntries = async ({
     });
   }
 
-  if (paidAmount > 0 && ["credit", "advance"].includes(sale.billType)) {
-    entries.push({
-      customerId,
-      customerName: customer,
-      customerPhone,
-      entryType: "payment",
-      direction: "credit",
-      amount: round2(paidAmount),
-      saleId: sale._id,
-      billNo: sale.billNo,
-      referenceNo: sale.referenceNo,
-      note: "Payment received",
-      createdBy
-    });
-  }
-
   if (entries.length > 0) {
     await CustomerLedger.insertMany(entries, { session });
     await syncLedgerBalance(customerId, session);
   }
 };
 
+const createLoyaltyLedgerEntries = async ({
+  sale,
+  earnedPoints = 0,
+  redeemedPoints = 0,
+  redeemedAmount = 0,
+  createdBy,
+  session
+}) => {
+  const customerId = sale.customerId;
+  const customerPhone = normalizeText(sale.customerPhone);
+  if (!customerId && !customerPhone) return;
+
+  const entries = [];
+  let runningBalance = await getLoyaltyBalanceForCustomer({ customerId, customerPhone }, session);
+
+  if (redeemedPoints > 0) {
+    runningBalance = Math.max(0, runningBalance - redeemedPoints);
+    entries.push({
+      customerId,
+      customerName: sale.customer,
+      customerPhone,
+      saleId: sale._id,
+      billNo: sale.billNo,
+      invoiceNo: sale.invoiceNo,
+      entryType: "redeem",
+      points: -redeemedPoints,
+      amountValue: redeemedAmount,
+      balanceAfter: runningBalance,
+      note: "Redeemed on POS bill",
+      createdBy
+    });
+  }
+
+  if (earnedPoints > 0) {
+    runningBalance += earnedPoints;
+    entries.push({
+      customerId,
+      customerName: sale.customer,
+      customerPhone,
+      saleId: sale._id,
+      billNo: sale.billNo,
+      invoiceNo: sale.invoiceNo,
+      entryType: "earn",
+      points: earnedPoints,
+      amountValue: 0,
+      balanceAfter: runningBalance,
+      note: "Earned on POS bill",
+      createdBy
+    });
+  }
+
+  if (entries.length) {
+    await CustomerLoyaltyLedger.insertMany(entries, { session });
+  }
+};
+
 export const getSalesWorkbench = async (req, res) => {
   try {
     const whatsappStatus = getWhatsAppStatus();
+    const systemSettings = await getSystemSettings();
     const [draft, holds, recentSales, customers, salespeople, nextBillNo, activeSession] = await Promise.all([
       POSDraft.findOne({ createdBy: req.user._id, status: "draft" }).sort({ updatedAt: -1 }).lean(),
       POSDraft.find({ createdBy: req.user._id, status: "hold" }).sort({ updatedAt: -1 }).limit(20).lean(),
       Sales.find().sort({ saleDate: -1 }).limit(12).lean(),
       Party.find({ partyType: "customer" }).sort({ updatedAt: -1 }).limit(30).lean(),
       Party.find({ partyType: "salesman" }).select("name phone location salesmanCode").sort({ salesmanCode: 1, name: 1 }).lean(),
-      getNextBillNo(),
+      getNextBillNo("CASH", new Date(), systemSettings.companyName || COMPANY_NAME),
       getActivePosSessionQuery().lean()
     ]);
 
@@ -740,7 +856,12 @@ export const getSalesWorkbench = async (req, res) => {
 
 export const getSales = async (req, res) => {
   try {
-    const sales = await Sales.find()
+    const filter = {};
+    if (req.query.billingMode && String(req.query.billingMode).toLowerCase() !== "all") {
+      filter.billingMode = normalizeBillingMode(req.query.billingMode);
+    }
+
+    const sales = await Sales.find(filter)
       .sort({ saleDate: -1 })
       .populate("items.itemId", "name")
       .lean();
@@ -757,10 +878,20 @@ export const getSales = async (req, res) => {
 
 export const getNextSalesBillNo = async (req, res) => {
   try {
+    const systemSettings = await getSystemSettings();
+    const billingMode = normalizeBillingMode(req.query.mode || "CASH");
+    const counter = await getNextModeBillNo({
+      mode: billingMode,
+      saleDate: new Date(),
+      companyName: systemSettings.companyName || COMPANY_NAME
+    });
     return res.status(200).json({
       success: true,
       data: {
-        billNo: await getNextBillNo(),
+        billingMode,
+        modeBillNo: counter.modeBillNo,
+        displayBillNo: counter.displayBillNo,
+        billNo: counter.displayBillNo,
         invoiceNo: await getNextInvoiceNo()
       }
     });
@@ -950,7 +1081,7 @@ export const recallHeldDraft = async (req, res) => {
 
 export const createOrLookupCustomer = async (req, res) => {
   try {
-    const customer = await upsertCustomer(req.body);
+    const customer = await upsertCustomer({ ...req.body, createdBy: req.user?._id });
 
     if (!customer) {
       return res.status(400).json({
@@ -1013,6 +1144,13 @@ export const updateSalesCustomer = async (req, res) => {
     customer.location = normalizeText(req.body.location) || customer.location;
     customer.dateOfBirth = req.body.dateOfBirth || customer.dateOfBirth;
     customer.anniversary = req.body.anniversary || customer.anniversary;
+    customer.loyaltyCardNo = normalizeText(req.body.loyaltyCardNo) || customer.loyaltyCardNo;
+    customer.customerType = ["retail", "wholesale", "vip"].includes(req.body.customerType) ? req.body.customerType : customer.customerType;
+    customer.creditLimit = Math.max(0, clampNumber(req.body.creditLimit, customer.creditLimit || 0));
+    const nextSegmentTags = normalizeTags(req.body.segmentTags);
+    if (nextSegmentTags.length || Array.isArray(req.body.segmentTags)) {
+      customer.segmentTags = nextSegmentTags;
+    }
     customer.addressLine1 = normalizeText(req.body.deliveryInfo || req.body.addressLine1) || customer.addressLine1;
     customer.city = normalizeText(req.body.city) || customer.city;
     customer.pincode = normalizeText(req.body.pincode) || customer.pincode;
@@ -1311,19 +1449,56 @@ export const createSale = async (req, res) => {
     const allowedPaymentModes = systemSettings.paymentModes || PAYMENT_MODE_OPTIONS;
     const requestedPaymentBreakdown = sanitizePaymentRows(req.body.paymentBreakdown)
       .filter((row) => allowedPaymentModes.includes(row.mode));
-    const billType = BILL_TYPES.includes(req.body.billType) ? req.body.billType : "cashpay";
+    const requestedBillingMode = normalizeBillingMode(req.body.billingMode || req.body.billType || "CASH");
+    const requestedBillType = BILL_TYPES.includes(req.body.billType) ? req.body.billType : "cashpay";
+    const billType = requestedBillingMode === "ADVANCE"
+      ? "advance"
+      : requestedBillingMode === "CREDIT"
+        ? "credit"
+        : requestedBillType;
+    const billingMode = getBillingModeFromBillType(billType, requestedBillingMode);
     const saleItems = await validateAndBuildSaleItems(req.body.items, roleRules);
     const exchangeItems = await validateExchangeItems(req.body.exchangeItems);
     const totals = recomputeSaleTotals({
-      items: saleItems,
-      discountPercent,
-      discountAmount: req.body.discountAmount,
-      exchangeItems,
-      advanceAmount: req.body.advanceAmount,
-      creditDue: req.body.creditDue,
-      paymentBreakdown: requestedPaymentBreakdown,
-      billType
-    });
+	      items: saleItems,
+	      discountPercent,
+	      discountAmount: req.body.discountAmount,
+	      exchangeItems,
+	      creditDue: req.body.creditDue,
+	      paymentBreakdown: requestedPaymentBreakdown,
+	      billType
+	    });
+    const requestedRedeemPoints = Math.floor(Math.max(0, clampNumber(req.body.loyaltyPointsRedeemed)));
+    let loyaltyRedeemedAmount = 0;
+    if (requestedRedeemPoints > 0) {
+      if (systemSettings.loyalty?.enabled === false) {
+        return res.status(400).json({ success: false, message: "Loyalty redemption is disabled" });
+      }
+      if (!req.body.customerId && !normalizeText(req.body.customerPhone)) {
+        return res.status(400).json({ success: false, message: "Select a customer before redeeming loyalty points" });
+      }
+      const currentLoyaltyBalance = await getLoyaltyBalanceForCustomer({
+        customerId: req.body.customerId,
+        customerPhone: req.body.customerPhone
+      });
+      if (requestedRedeemPoints > currentLoyaltyBalance) {
+        return res.status(400).json({ success: false, message: `Only ${currentLoyaltyBalance} loyalty points are available` });
+      }
+      const minRedeemPoints = Math.max(0, clampNumber(systemSettings.loyalty?.minRedeemPoints));
+      if (requestedRedeemPoints < minRedeemPoints) {
+        return res.status(400).json({ success: false, message: `Minimum ${minRedeemPoints} points required to redeem` });
+      }
+      loyaltyRedeemedAmount = calculateRedeemAmount(requestedRedeemPoints, systemSettings.loyalty);
+      const maxRedeemAmount = round2((totals.payable * Math.min(100, Math.max(0, clampNumber(systemSettings.loyalty?.maxRedeemPercent, 20)))) / 100);
+      if (loyaltyRedeemedAmount > maxRedeemAmount) {
+        return res.status(400).json({ success: false, message: `Loyalty redemption cannot exceed Rs. ${maxRedeemAmount.toFixed(2)} for this bill` });
+      }
+      requestedPaymentBreakdown.push({
+        mode: "Loyalty",
+        amount: loyaltyRedeemedAmount,
+        reference: `${requestedRedeemPoints} points`
+      });
+    }
     const settlement = validateSettlement({
       billType,
       customer: req.body.customer,
@@ -1331,14 +1506,53 @@ export const createSale = async (req, res) => {
       subtotal: totals.subtotal,
       discountAmount: totals.discountAmount,
       exchangeAmount: totals.exchangeAmount,
-      advanceAmount: req.body.advanceAmount,
       creditDue: req.body.creditDue
-    });
+	    });
     const paymentBreakdown = buildFinalPaymentBreakdown(billType, requestedPaymentBreakdown, settlement.payable);
+    const paymentSummary = buildPaymentSummary({
+      paymentBreakdown,
+      billingMode,
+      payableAmount: settlement.payable,
+      creditDue: settlement.creditDue
+    });
+    const paymentStatus = getPaymentStatus({
+      billingMode,
+      payableAmount: settlement.payable,
+      receivedAmount: paymentSummary.receivedAmount,
+      balanceAmount: paymentSummary.balanceAmount
+    });
+    if (settlement.creditDue > 0 && req.body.customerId) {
+      const customerRecord = await Party.findOne({ _id: req.body.customerId, partyType: "customer" }).lean();
+      const creditLimit = clampNumber(customerRecord?.creditLimit);
+      if (creditLimit > 0) {
+        const ledgerBalance = clampNumber(customerRecord?.ledgerBalance);
+        const availableCredit = round2(creditLimit - ledgerBalance);
+        if (settlement.creditDue > availableCredit) {
+          return res.status(400).json({
+            success: false,
+            message: `Credit limit exceeded. Available credit Rs. ${Math.max(0, availableCredit).toFixed(2)}`
+          });
+        }
+      }
+    }
 
-    const salePayload = {
-      invoiceNo: normalizeText(req.body.invoiceNo) || await getNextInvoiceNo(saleDate),
-      billNo: normalizeText(req.body.billNo) || await getNextBillNo(saleDate),
+    const buildAuthoritativeSalePayload = async ({ session } = {}) => {
+      const counter = await getNextModeBillNo({
+        mode: billingMode,
+        saleDate,
+        companyName: systemSettings.companyName || COMPANY_NAME,
+        increment: true,
+        session
+      });
+
+      return {
+      invoiceNo: await getNextInvoiceNo(saleDate),
+      billNo: counter.displayBillNo,
+      billingMode,
+      modeBillNo: counter.modeBillNo,
+      displayBillNo: counter.displayBillNo,
+      paymentStatus,
+      paymentSummary,
       saleDate,
       customer: normalizeText(req.body.customer),
       customerId: req.body.customerId || undefined,
@@ -1360,6 +1574,19 @@ export const createSale = async (req, res) => {
       advanceAmount: settlement.advanceAmount,
       creditDue: settlement.creditDue,
       paidAmount: settlement.paidAmount,
+      advanceDetails: billingMode === "ADVANCE" ? {
+        advanceAmount: settlement.advanceAmount,
+        remainingAmount: settlement.creditDue,
+        deliveryStatus: req.body.advanceDetails?.deliveryStatus || "DELIVERED",
+        expectedDeliveryDate: req.body.advanceDetails?.expectedDeliveryDate || undefined,
+        remarks: normalizeText(req.body.advanceDetails?.remarks)
+      } : undefined,
+      creditDetails: billingMode === "CREDIT" ? {
+        creditAmount: settlement.creditDue,
+        dueDate: req.body.creditDetails?.dueDate || undefined,
+        creditDays: clampNumber(req.body.creditDetails?.creditDays),
+        remarks: normalizeText(req.body.creditDetails?.remarks)
+      } : undefined,
       paymentBreakdown,
       exchangeItems: exchangeItems.map((item) => ({
         saleId: item.sale._id,
@@ -1369,63 +1596,94 @@ export const createSale = async (req, res) => {
         barcode: item.barcode,
         amount: item.amount
       })),
-      loyaltyPointsEarned: calculateEarnedPoints(settlement.payable),
+      loyaltyPointsEarned: (req.body.customerId || normalizeText(req.body.customerPhone))
+        ? calculateEarnedPoints(settlement.payable, systemSettings.loyalty)
+        : 0,
+      loyaltyPointsRedeemed: requestedRedeemPoints,
+      loyaltyRedeemedAmount,
       totalAmount: settlement.payable,
       posSessionId: activeSession?._id
+      };
     };
 
-    const sale = await completeSale({
-      salePayload,
-      createdBy: req.user._id,
-      afterCreate: async ({ sale, session }) => {
-        const customerRecord = await upsertCustomer({
-          customerId: req.body.customerId,
-          customer: req.body.customer,
-          customerPhone: req.body.customerPhone,
-          location: req.body.location,
-          dateOfBirth: req.body.dateOfBirth,
-          anniversary: req.body.anniversary,
-          deliveryInfo: req.body.deliveryInfo,
-          note: req.body.note,
-          session
-        });
+    let sale = null;
+    for (let attempt = 1; attempt <= 3; attempt += 1) {
+      try {
+        sale = await completeSale({
+          salePayload: buildAuthoritativeSalePayload,
+          createdBy: req.user._id,
+          afterCreate: async ({ sale, session }) => {
+            const customerRecord = await upsertCustomer({
+              customerId: req.body.customerId,
+              customer: req.body.customer,
+              customerPhone: req.body.customerPhone,
+              location: req.body.location,
+              dateOfBirth: req.body.dateOfBirth,
+              anniversary: req.body.anniversary,
+              loyaltyCardNo: req.body.loyaltyCardNo,
+              customerType: req.body.customerType,
+              creditLimit: req.body.creditLimit,
+              segmentTags: req.body.segmentTags,
+              applyLoyalty: req.body.applyLoyalty,
+              createdBy: req.user._id,
+              deliveryInfo: req.body.deliveryInfo,
+              note: req.body.note,
+              session
+            });
 
-        if (customerRecord?._id) {
-          sale.customerId = customerRecord._id;
-          await sale.save({ session });
-        }
+            if (customerRecord?._id) {
+              sale.customerId = customerRecord._id;
+              await sale.save({ session });
+            }
 
-        await deductInventoryItems(saleItems, {
-          session,
-          allowNegativeStock: Boolean(systemSettings.allowNegativeStock)
-        });
+            await deductInventoryItems(saleItems, {
+              session,
+              allowNegativeStock: Boolean(systemSettings.allowNegativeStock)
+            });
 
-        const exchangeEntry = await applyExchangeReturns(
-          exchangeItems,
-          sale._id,
-          sale.customer,
-          sale.customerPhone,
-          sale.customerId,
-          req.user._id,
-          session
-        );
+            const exchangeEntry = await applyExchangeReturns(
+              exchangeItems,
+              sale._id,
+              sale.customer,
+              sale.customerPhone,
+              sale.customerId,
+              req.user._id,
+              session
+            );
 
         await createLedgerEntries({
-          sale,
-          customer: sale.customer,
-          customerPhone: sale.customerPhone,
-          customerId: sale.customerId,
-          paidAmount: settlement.paidAmount,
-          advanceAmount: settlement.advanceAmount,
-          creditDue: settlement.creditDue,
-          exchangeAmount: totals.exchangeAmount,
-          createdBy: req.user._id,
-          session
+              sale,
+              customer: sale.customer,
+              customerPhone: sale.customerPhone,
+              customerId: sale.customerId,
+              paidAmount: settlement.paidAmount,
+              advanceAmount: settlement.advanceAmount,
+              creditDue: settlement.creditDue,
+              exchangeAmount: totals.exchangeAmount,
+              createdBy: req.user._id,
+              session
         });
 
+            await createLoyaltyLedgerEntries({
+              sale,
+              earnedPoints: sale.loyaltyPointsEarned,
+              redeemedPoints: requestedRedeemPoints,
+              redeemedAmount: loyaltyRedeemedAmount,
+              createdBy: req.user._id,
+              session
+            });
+
         sale._exchangeEntry = exchangeEntry;
+          }
+        });
+        break;
+      } catch (error) {
+        if (error?.code === 11000 && attempt < 3) {
+          continue;
+        }
+        throw error;
       }
-    });
+    }
     await createAuditLog({
       module: "sales",
       action: "CREATE",
@@ -1458,26 +1716,36 @@ export const createSale = async (req, res) => {
 export const getLoyaltySummary = async (req, res) => {
   try {
     const customerPhone = normalizeText(req.params.customerPhone);
+    const customerId = normalizeText(req.query.customerId);
 
-    if (!customerPhone) {
+    if (!customerPhone && !customerId) {
       return res.status(400).json({
         success: false,
-        message: "Customer phone is required"
+        message: "Customer phone or id is required"
       });
     }
 
-    const sales = await Sales.find({ customerPhone }).lean();
-    const earned = sales.reduce((sum, sale) => sum + clampNumber(sale.loyaltyPointsEarned), 0);
-    const redeemed = sales.reduce((sum, sale) => sum + clampNumber(sale.loyaltyPointsRedeemed), 0);
+    const filter = [];
+    if (customerId) filter.push({ customerId });
+    if (customerPhone) filter.push({ customerPhone });
+    const ledger = await CustomerLoyaltyLedger.find({ $or: filter }).sort({ createdAt: -1 }).lean();
+    const earned = ledger
+      .filter((row) => row.entryType === "earn")
+      .reduce((sum, row) => sum + clampNumber(row.points), 0);
+    const redeemed = Math.abs(ledger
+      .filter((row) => row.entryType === "redeem")
+      .reduce((sum, row) => sum + clampNumber(row.points), 0));
 
     return res.status(200).json({
       success: true,
       data: {
+        customerId,
         customerPhone,
-        visits: sales.length,
+        visits: new Set(ledger.map((row) => String(row.saleId || "")).filter(Boolean)).size,
         earned,
         redeemed,
-        balance: Math.max(0, earned - redeemed)
+        balance: Math.max(0, earned - redeemed),
+        history: ledger.slice(0, 50)
       }
     });
   } catch (err) {
@@ -1487,6 +1755,24 @@ export const getLoyaltySummary = async (req, res) => {
       message: "Failed to fetch loyalty summary",
       error: err.message
     });
+  }
+};
+
+export const getCustomerCommunicationHistory = async (req, res) => {
+  try {
+    const customerId = normalizeText(req.query.customerId);
+    const customerPhone = normalizeText(req.query.customerPhone);
+    if (!customerId && !customerPhone) {
+      return res.status(400).json({ success: false, message: "Customer id or phone is required" });
+    }
+
+    const filter = [];
+    if (customerId) filter.push({ customerId });
+    if (customerPhone) filter.push({ customerPhone });
+    const history = await CustomerCommunicationLog.find({ $or: filter }).sort({ createdAt: -1 }).limit(50).lean();
+    return res.status(200).json({ success: true, data: history });
+  } catch (err) {
+    return res.status(500).json({ success: false, message: "Failed to fetch customer communication history", error: err.message });
   }
 };
 

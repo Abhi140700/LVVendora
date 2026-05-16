@@ -353,6 +353,8 @@ const PurchaseEntry = () => {
 
         const historyRows = purchaseHistoryRecords.flatMap((purchase) =>
             (purchase.items || []).map((historyItem) => {
+                const historyItemId = typeof historyItem.itemId === "object" ? historyItem.itemId?._id : historyItem.itemId;
+                const historyPartyName = purchase.party?.name || purchase.partyName || purchase.party || "-";
                 const historyName = normalizeName(historyItem?.name).toLowerCase();
                 const historyCategory = normalizeName(historyItem?.category?.name || historyItem?.category).toLowerCase();
                 const historyBrand = normalizeName(historyItem?.brand?.name || historyItem?.brand).toLowerCase();
@@ -365,18 +367,34 @@ const PurchaseEntry = () => {
                 }
 
                 return {
-                    id: `${purchase._id}-${historyItem._id || historyItem.itemId || historyItem.name}`,
+                    id: `${purchase._id}-${historyItem._id || historyItemId || historyItem.name}`,
+                    itemId: historyItemId || "",
+                    name: historyItem.name || historyItem.itemId?.name || "",
+                    category: historyItem.category?.name || historyItem.category || "",
+                    categoryId: historyItem.category?._id || "",
+                    brand: historyItem.brand?.name || historyItem.brand || "",
+                    brandId: historyItem.brand?._id || "",
                     date: purchase.billDate || purchase.receiveDate,
                     grnNo: purchase.grnNo || "-",
                     hsn: historyItem.hsn || "-",
+                    unit: normalizeUnit(historyItem.unit || "PCS"),
+                    size: historyItem.size || "",
+                    color: historyItem.color || "",
+                    material: historyItem.material || "",
+                    style: historyItem.style || "",
+                    designNo: historyItem.designNo || "",
                     purchaseRate: Number(historyItem.purchaseRate || 0).toFixed(2),
+                    purchaseRateValue: Number(historyItem.purchaseRate || 0),
                     packOf: historyItem.packOf || "-",
                     packQty: historyItem.packQty || "-",
                     netQty: Number(historyItem.qty || 0),
                     mrp: Number(historyItem.mrp || 0) > 0 ? Number(historyItem.mrp || 0).toFixed(2) : "-",
+                    mrpValue: Number(historyItem.mrp || 0),
                     saleRate: Number(historyItem.saleRate || 0) > 0 ? Number(historyItem.saleRate || 0).toFixed(2) : "-",
+                    saleRateValue: Number(historyItem.saleRate || 0),
+                    discountValue: Number(historyItem.discount || 0),
                     subStyle: historyItem.subStyle || "-",
-                    partyName: purchase.party || "-",
+                    partyName: historyPartyName,
                 };
             })
         )
@@ -857,6 +875,47 @@ const PurchaseEntry = () => {
         }));
     };
 
+    const applyHistoryRowToActiveItem = (historyRow) => {
+        const targetRowId = activeHistoryItem?.id || items[0]?.id;
+        if (!targetRowId || !historyRow) {
+            return;
+        }
+
+        setItems((prevItems) => prevItems.map((item) => {
+            if (item.id !== targetRowId) return item;
+
+            return recalculateItem({
+                ...item,
+                itemId: historyRow.itemId || item.itemId,
+                category: historyRow.category || item.category,
+                categoryId: historyRow.categoryId || item.categoryId,
+                hsn: historyRow.hsn && historyRow.hsn !== "-" ? historyRow.hsn : item.hsn,
+                brand: historyRow.brand || item.brand,
+                brandId: historyRow.brandId || item.brandId,
+                size: historyRow.size || item.size,
+                name: historyRow.name || item.name,
+                unit: normalizeUnit(historyRow.unit || item.unit),
+                purchaseRate: historyRow.purchaseRateValue || item.purchaseRate,
+                discount: historyRow.discountValue || item.discount,
+                mrp: historyRow.mrpValue || item.mrp,
+                saleRate: historyRow.saleRateValue || item.saleRate,
+                color: historyRow.color || item.color,
+                material: historyRow.material || item.material,
+                style: historyRow.style || item.style,
+                subStyle: historyRow.subStyle && historyRow.subStyle !== "-" ? historyRow.subStyle : item.subStyle,
+                designNo: historyRow.designNo || item.designNo,
+            });
+        }));
+
+        setActiveHistoryRowId(targetRowId);
+        setStatusMessage(`Applied purchase history from ${historyRow.partyName || "previous bill"} to the active item row.`);
+        notifySuccess("Purchase history applied to active item row.");
+        setTimeout(() => {
+            refs.current[`${targetRowId}-qty`]?.focus();
+            refs.current[`${targetRowId}-qty-mobile`]?.focus();
+        }, 0);
+    };
+
     const updateItem = (id, field, value) => {
         if (["qty", "purchaseRate", "discount", "perPercent", "mrp", "saleRate", "extraDiscount", "labelPerPc"].includes(field)) {
             const normalizedValue = String(value ?? "");
@@ -1078,13 +1137,21 @@ const PurchaseEntry = () => {
                 return;
             }
 
-            const response = await fetchWithAuth(`${API_BASE}/parties`, {
-                method: "POST",
-                body: JSON.stringify({
+            const entityPayload = modalState.type === "transporter"
+                ? {
+                    name: entityName,
+                    phone: modalState.form.phone,
+                    partyType: modalState.type,
+                }
+                : {
                     ...modalState.form,
                     name: entityName,
                     partyType: modalState.type,
-                }),
+                };
+
+            const response = await fetchWithAuth(`${API_BASE}/parties`, {
+                method: "POST",
+                body: JSON.stringify(entityPayload),
             });
 
             const entity = response.data || response;
@@ -1430,9 +1497,22 @@ const PurchaseEntry = () => {
                 const firstErrorField = ["category", "hsn", "name", "qty", "purchaseRate"].find((field) => invalidRow[field]);
                 if (firstErrorField) {
                     refs.current[`${items[invalidRowIndex].id}-${firstErrorField}`]?.focus();
+                    refs.current[`${items[invalidRowIndex].id}-${firstErrorField}-mobile`]?.focus();
                 }
-                setStatusMessage(`Fix row ${invalidRowIndex + 1} before saving.`);
-                notifyError(`Fix row ${invalidRowIndex + 1} before saving.`);
+                const fieldLabels = {
+                    category: "Category",
+                    hsn: "HSN",
+                    name: "Item Name",
+                    qty: "Qty",
+                    purchaseRate: "Purchase Rate",
+                };
+                const missingFields = ["category", "hsn", "name", "qty", "purchaseRate"]
+                    .filter((field) => invalidRow[field])
+                    .map((field) => fieldLabels[field])
+                    .join(", ");
+                const message = `Fix row ${invalidRowIndex + 1}: ${missingFields} ${missingFields.includes(",") ? "are" : "is"} required.`;
+                setStatusMessage(message);
+                notifyError(message);
                 return;
             }
 
@@ -2218,6 +2298,7 @@ const PurchaseEntry = () => {
                                             <th>MRP</th>
                                             <th>Sale Rate</th>
                                             <th>Party Name</th>
+                                            <th>Action</th>
                                         </tr>
                                     </thead>
                                     <tbody className="table-border-bottom-0">
@@ -2232,10 +2313,15 @@ const PurchaseEntry = () => {
                                                 <td>{row.mrp}</td>
                                                 <td>{row.saleRate}</td>
                                                 <td>{row.partyName}</td>
+                                                <td>
+                                                    <button type="button" className="btn btn-sm btn-outline-primary" onClick={() => applyHistoryRowToActiveItem(row)}>
+                                                        Apply
+                                                    </button>
+                                                </td>
                                             </tr>
                                         )) : (
                                             <tr>
-                                                <td colSpan="9" style={styles.historyEmptyCell}>
+                                                <td colSpan="10" style={styles.historyEmptyCell}>
                                                     No similar purchase history found yet for the active row.
                                                 </td>
                                             </tr>
@@ -2266,6 +2352,9 @@ const PurchaseEntry = () => {
                                             <div><strong>Sale Rate</strong><div style={styles.subtleText}>{row.saleRate}</div></div>
                                             <div><strong>Sub Style</strong><div style={styles.subtleText}>{row.subStyle || "-"}</div></div>
                                             <div style={{ gridColumn: "1 / -1" }}><strong>Party</strong><div style={styles.subtleText}>{row.partyName || "-"}</div></div>
+                                            <button type="button" className="btn btn-sm btn-outline-primary" style={{ gridColumn: "1 / -1" }} onClick={() => applyHistoryRowToActiveItem(row)}>
+                                                Apply to active item
+                                            </button>
                                         </div>
                                     </article>
                                 )) : (
@@ -2777,32 +2866,77 @@ const PurchaseEntry = () => {
             ) : null}
 
             {saveConfirmState.open ? (
-                <div style={styles.modalBackdrop}>
-                    <div style={{ ...styles.modal, width: "min(520px, 100%)" }}>
-                        <div style={styles.modalHeader}>
-                            <div>
-                                <h3 style={{ margin: 0 }}>{saveConfirmState.title}</h3>
-                                <p style={styles.subtleText}>{saveConfirmState.message}</p>
+                <>
+                    <div className="modal-backdrop fade show"></div>
+                    <div className="modal fade show d-block" tabIndex="-1" role="dialog" aria-modal="true" aria-hidden="false">
+                        <div className="modal-dialog modal-dialog-centered" onMouseDown={(event) => event.stopPropagation()}>
+                            <div className="modal-content">
+                                <div className="modal-header">
+                                    <div>
+                                        <h5 className="modal-title">{saveConfirmState.title}</h5>
+                                        <p className="mb-0 text-muted">{saveConfirmState.message}</p>
+                                    </div>
+                                    <button type="button" className="btn-close" onClick={closeSaveConfirmModal} aria-label="Close"></button>
+                                </div>
+                                <div className="modal-body">
+                                    <div className="row g-3">
+                                        <div className="col-6">
+                                            <div className="summary-line">
+                                                <span>GRN</span>
+                                                <strong>{grnNo || "-"}</strong>
+                                            </div>
+                                        </div>
+                                        <div className="col-6">
+                                            <div className="summary-line">
+                                                <span>Bill No</span>
+                                                <strong>{billNo || "-"}</strong>
+                                            </div>
+                                        </div>
+                                        <div className="col-12">
+                                            <div className="summary-line">
+                                                <span>Party</span>
+                                                <strong>{party || "-"}</strong>
+                                            </div>
+                                        </div>
+                                        <div className="col-6">
+                                            <div className="summary-line">
+                                                <span>Items</span>
+                                                <strong>{rowsForValidation.length}</strong>
+                                            </div>
+                                        </div>
+                                        <div className="col-6">
+                                            <div className="summary-line">
+                                                <span>Net Qty</span>
+                                                <strong>{netQty}</strong>
+                                            </div>
+                                        </div>
+                                        <div className="col-12">
+                                            <div className="summary-line">
+                                                <span>Final Total</span>
+                                                <strong>Rs. {finalTotal.toFixed(2)}</strong>
+                                            </div>
+                                        </div>
+                                    </div>
+                                </div>
+                                <div className="modal-footer">
+                                    <button type="button" onClick={closeSaveConfirmModal} className="btn btn_style inActive">Cancel</button>
+                                    <button
+                                        ref={saveConfirmYesRef}
+                                        type="button"
+                                        onClick={() => {
+                                            closeSaveConfirmModal();
+                                            savePurchase();
+                                        }}
+                                        className="btn btn_style"
+                                        disabled={savingPurchase}
+                                    >
+                                        {savingPurchase ? "Saving..." : saveConfirmState.title}
+                                    </button>
+                                </div>
                             </div>
-                            <button type="button" onClick={closeSaveConfirmModal} style={styles.closeButton}>Close</button>
-                        </div>
-                        <div style={styles.footerActions}>
-                            <button
-                                ref={saveConfirmYesRef}
-                                type="button"
-                                onClick={() => {
-                                    closeSaveConfirmModal();
-                                    savePurchase();
-                                }}
-                                style={styles.primaryButton}
-                            >
-                                Yes
-                            </button>
-                            <button type="button" onClick={closeSaveConfirmModal} style={styles.secondaryButton}>No</button>
-                            <button type="button" onClick={closeSaveConfirmModal} style={styles.secondaryButton}>Cancel</button>
                         </div>
                     </div>
-                </div>
+                </>
             ) : null}
         </div>
     );

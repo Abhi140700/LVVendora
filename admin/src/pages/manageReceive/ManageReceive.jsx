@@ -1,4 +1,5 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import JsBarcode from "jsbarcode";
 import LabelPrintModal from "../labelPrinting/LabelPrintModal";
 import useAppSettings from "../../hooks/useAppSettings.js";
 import { buildLabelDraft, buildLabelPrintHtml, normalizeBarcodeFormat } from "../labelPrinting/labelPrintUtils.jsx";
@@ -54,6 +55,12 @@ const ManageReceive = () => {
     const [quickPrintItem, setQuickPrintItem] = useState(null);
     const [quickPrinting, setQuickPrinting] = useState(false);
     const quickPrintInputRef = useRef(null);
+    const [billPageSize, setBillPageSize] = useState(10);
+    const [itemPageSize, setItemPageSize] = useState(10);
+    const [billStatusFilter, setBillStatusFilter] = useState("");
+    const [itemStatusFilter, setItemStatusFilter] = useState("");
+    const [queueSearch, setQueueSearch] = useState("");
+    const [itemTableSearch, setItemTableSearch] = useState("");
     const hasActiveSearchFilters = useMemo(() => hasValidSearchFilters(filters), [filters]);
     const filterFieldOrder = useMemo(
         () => ["grn", "party", "supplier", "agent", "billNo", "billDate", "lrNo", "category", "brand", "itemName", "barcode"],
@@ -126,14 +133,64 @@ const ManageReceive = () => {
         return true;
     }), [bills, filters]);
 
-    const visibleBills = useMemo(() => (hasSearched ? filteredBills : []), [filteredBills, hasSearched]);
+    const getLabelTargetForItem = useCallback((item = {}) => {
+        const unit = String(item.unit || "").toUpperCase();
+        if (["MTR", "MTRS", "METER", "METERS"].includes(unit)) {
+            return 1;
+        }
+        return Math.max(Math.ceil(Number(item.qty || 0)), 0);
+    }, []);
+    const getRemainingLabelCount = useCallback((item = {}) => {
+        if (item.labelsPrinted) return 0;
+        return Math.max(getLabelTargetForItem(item) - Number(item.printedLabels || 0), 0);
+    }, [getLabelTargetForItem]);
+    const getBillPendingLabelCount = useCallback(
+        (bill = {}) => (bill.items || []).reduce((sum, item) => sum + getRemainingLabelCount(item), 0),
+        [getRemainingLabelCount],
+    );
+    const getDefaultSalesQtyForItem = useCallback((item = {}) => {
+        const unit = String(item.unit || "").toUpperCase();
+        const defaultSalesQty = Number(item.defQty || item.defaultSalesQty || 0);
+        if (Number.isFinite(defaultSalesQty) && defaultSalesQty > 0) {
+            return defaultSalesQty;
+        }
+        return ["MTR", "MTRS", "METER", "METERS"].includes(unit)
+            ? Math.max(Number(item.qty || 1), 1)
+            : 1;
+    }, []);
+    const getReceivingQtyForLabel = useCallback((item = {}) => {
+        const receivingQty = Number(item.qty || 0);
+        return Number.isFinite(receivingQty) && receivingQty > 0 ? receivingQty : 1;
+    }, []);
+
+    const visibleBills = useMemo(() => {
+        if (!hasSearched) return [];
+        return filteredBills.filter((bill) => {
+            if (billStatusFilter === "Pending" && bill.received) return false;
+            if (billStatusFilter === "Received" && !bill.received) return false;
+            if (billStatusFilter === "Labels Pending" && getBillPendingLabelCount(bill) <= 0) return false;
+            if (billStatusFilter === "Labels Printed" && getBillPendingLabelCount(bill) > 0) return false;
+            if (queueSearch) {
+                const haystack = [
+                    bill.grnNo,
+                    bill.billNo,
+                    bill.lrNo,
+                    bill.party?.name || bill.party,
+                    bill.supplier || bill.supplierAgent,
+                ].join(" ").toLowerCase();
+                if (!haystack.includes(queueSearch.toLowerCase())) return false;
+            }
+            return true;
+        });
+    }, [billStatusFilter, filteredBills, getBillPendingLabelCount, hasSearched, queueSearch]);
+    const pagedBills = useMemo(() => visibleBills.slice(0, billPageSize), [billPageSize, visibleBills]);
     const pendingReceiveCount = useMemo(
         () => visibleBills.filter((bill) => !bill.received).length,
         [visibleBills]
     );
     const pendingLabelCount = useMemo(
-        () => visibleBills.reduce((sum, bill) => sum + (bill.items || []).filter((item) => !item.labelsPrinted).length, 0),
-        [visibleBills]
+        () => visibleBills.reduce((sum, bill) => sum + getBillPendingLabelCount(bill), 0),
+        [getBillPendingLabelCount, visibleBills]
     );
 
     useEffect(() => {
@@ -158,6 +215,21 @@ const ManageReceive = () => {
         () => (selectedBill?.items || []).map((item, index) => mapItemToDraft(item, `${selectedBill._id}-${index}`)),
         [selectedBill],
     );
+    const visibleSelectedBillItems = useMemo(() => selectedBillItems.map((item, index) => ({ ...item, originalIndex: index })).filter((item) => {
+        if (itemStatusFilter === "Pending Labels" && getRemainingLabelCount(item) <= 0) return false;
+        if (itemStatusFilter === "Labels Printed" && getRemainingLabelCount(item) > 0) return false;
+        if (itemTableSearch) {
+            const haystack = [
+                item.barcode,
+                item.category,
+                item.brand,
+                item.name,
+                item.designNo,
+            ].join(" ").toLowerCase();
+            if (!haystack.includes(itemTableSearch.toLowerCase())) return false;
+        }
+        return true;
+    }).slice(0, itemPageSize), [getRemainingLabelCount, itemPageSize, itemStatusFilter, itemTableSearch, selectedBillItems]);
     const selectedItem = selectedBillItems[selectedItemIndex ?? -1] || null;
     const selectedBillItemCount = selectedBill?.items?.length || 0;
     const selectedBillParty = getDisplayText(selectedBill?.party?.name || selectedBill?.party, "-");
@@ -172,13 +244,6 @@ const ManageReceive = () => {
     useEffect(() => {
         setSelectedItemIndex(selectedBill?.items?.length ? 0 : null);
     }, [selectedBillId, selectedBill?.items?.length]);
-
-    useEffect(() => {
-        if (isQuickPrintOpen && quickPrintInputRef.current) {
-            quickPrintInputRef.current.focus();
-            quickPrintInputRef.current.select();
-        }
-    }, [isQuickPrintOpen]);
 
     useEffect(() => {
         if (!isBillModalOpen) {
@@ -201,6 +266,17 @@ const ManageReceive = () => {
             itemModalFirstInputRef.current?.select?.();
         });
     }, [isItemModalOpen]);
+
+    useEffect(() => {
+        if (!isQuickPrintOpen) {
+            return;
+        }
+
+        requestAnimationFrame(() => {
+            quickPrintInputRef.current?.focus();
+            quickPrintInputRef.current?.select?.();
+        });
+    }, [isQuickPrintOpen]);
 
     const handleFilterEnter = useCallback((event, fieldKey) => {
         if (event.key !== "Enter") {
@@ -309,7 +385,7 @@ const ManageReceive = () => {
         }
 
         setQuickPrintItem(selectedItem);
-        setQuickPrintQty(Math.max(Number(selectedItem.qty || 1), 1));
+        setQuickPrintQty(Math.max(getRemainingLabelCount(selectedItem) || getLabelTargetForItem(selectedItem), 1));
         setIsQuickPrintOpen(true);
     };
 
@@ -328,7 +404,7 @@ const ManageReceive = () => {
 
         setSelectedItemIndex(index);
         setQuickPrintItem(item);
-        setQuickPrintQty(Math.max(Number(item.qty || 1), 1));
+        setQuickPrintQty(Math.max(getRemainingLabelCount(item) || getLabelTargetForItem(item), 1));
         setIsQuickPrintOpen(true);
     };
 
@@ -400,13 +476,32 @@ const ManageReceive = () => {
                 }, 250);
             };
 
-            setTimeout(() => finalize(false), 5000);
+            setTimeout(() => finalize(false), 30000);
 
             iframe.onload = () => {
                 const triggerPrint = () => {
+                    try {
+                        const barcodeNodes = Array.from(printWindow.document.querySelectorAll(".barcode-svg"));
+                        barcodeNodes.forEach((barcodeNode) => {
+                            JsBarcode(barcodeNode, barcodeNode.getAttribute("jsbarcode-value") || "", {
+                                format: barcodeNode.getAttribute("jsbarcode-format") || "CODE128",
+                                displayValue: false,
+                                width: Number(barcodeNode.getAttribute("jsbarcode-width") || 1.35),
+                                height: Number(barcodeNode.getAttribute("jsbarcode-height") || 22),
+                                margin: 0,
+                                background: "#ffffff",
+                            });
+                        });
+                    } catch (error) {
+                        console.error("Print barcode render failed:", error);
+                        notifyError("Unable to render barcode for printing.");
+                        finalize(false);
+                        return;
+                    }
                     printWindow.addEventListener("afterprint", () => finalize(true), { once: true });
                     printWindow.focus();
                     printWindow.print();
+                    setTimeout(() => finalize(true), 10000);
                 };
 
                 if (printWindow.document?.fonts?.ready) {
@@ -417,7 +512,7 @@ const ManageReceive = () => {
             };
         });
 
-    const createPrintableItem = (item, qty, fallbackKey) => ({
+    const createPrintableItem = (item, printQty, fallbackKey) => ({
         ...item,
         _id: item._id || fallbackKey,
         itemId: item.itemId?._id || item.itemId || item._id || fallbackKey,
@@ -429,8 +524,9 @@ const ManageReceive = () => {
         purchaseRate: toPositiveNumber(item.purchaseRate, 0),
         mrp: toPositiveNumber(item.mrp, toPositiveNumber(item.saleRate, 0)),
         saleRate: toPositiveNumber(item.saleRate, toPositiveNumber(item.mrp, 0)),
-        labels: qty,
-        qty,
+        labels: printQty,
+        printQty,
+        qty: getReceivingQtyForLabel(item),
     });
 
     const getLatestLabelsByItem = useCallback(async (itemsToPrint) => {
@@ -506,6 +602,7 @@ const ManageReceive = () => {
                         barcode: printItem.barcode,
                         companyName: appSettings.companyName,
                         billNo: selectedBill.billNo,
+                        partyName: getDisplayText(selectedBill.party?.name || selectedBill.party, ""),
                     }),
                 ),
                 labelSize: appSettings.labelSize || "50x25",
@@ -528,6 +625,7 @@ const ManageReceive = () => {
                         price: Number(printItem.saleRate || 0),
                         purchaseRate: Number(printItem.purchaseRate || 0),
                         qty: Number(printItem.qty || 1),
+                        printQty: Number(printItem.printQty || printItem.labels || 1),
                         copies: 1,
                         category: printItem.category?._id || printItem.category || "",
                         itemId: printItem.itemId,
@@ -563,12 +661,101 @@ const ManageReceive = () => {
         }
     };
 
+    const reprintItemDirectly = async (itemToPrint, reprintQty = 1) => {
+        if (!selectedBill?._id || !itemToPrint) {
+            return;
+        }
+
+        try {
+            setQuickPrinting(true);
+            const printItem = createPrintableItem(
+                itemToPrint,
+                Math.max(Number(reprintQty || 1), 1),
+                `${selectedBill._id}-${selectedItemIndex ?? 0}`,
+            );
+            const latestLabelByItemId = await getLatestLabelsByItem([printItem]);
+            const latestLabel = latestLabelByItemId.get(String(printItem.itemId || "")) || null;
+            if (!latestLabel?._id || !latestLabel?.barcode) {
+                setError("No printed barcode found for this item. Open Label Workbench to create the first label.");
+                notifyError("No printed barcode found for this item. Open Label Workbench to create the first label.");
+                return;
+            }
+
+            const normalizedBarcode = normalizeBarcodeFormat(appSettings.barcodeFormat, latestLabel.barcode);
+            if (!normalizedBarcode.value) {
+                setError("Saved barcode is invalid for reprint.");
+                notifyError("Saved barcode is invalid for reprint.");
+                return;
+            }
+
+            const reprintItem = {
+                ...printItem,
+                barcode: normalizedBarcode.value,
+                mrp: toPositiveNumber(printItem.mrp, toPositiveNumber(latestLabel.mrp, toPositiveNumber(latestLabel.price, 0))),
+                saleRate: toPositiveNumber(printItem.saleRate, toPositiveNumber(latestLabel.saleRate, toPositiveNumber(latestLabel.price, 0))),
+                purchaseRate: toPositiveNumber(printItem.purchaseRate, toPositiveNumber(latestLabel.purchaseRate, 0)),
+            };
+
+            const labelHtml = buildLabelPrintHtml({
+                labels: [
+                    buildLabelDraft({
+                        row: reprintItem,
+                        barcode: reprintItem.barcode,
+                        companyName: appSettings.companyName,
+                        billNo: selectedBill.billNo,
+                        partyName: getDisplayText(selectedBill.party?.name || selectedBill.party, ""),
+                    }),
+                ],
+                labelSize: appSettings.labelSize || "50x25",
+                companyName: appSettings.companyName,
+                billNo: selectedBill.billNo,
+                barcodeFormat: appSettings.barcodeFormat,
+            });
+
+            const confirmed = await openPrintSheet(labelHtml);
+            if (!confirmed) {
+                return;
+            }
+
+            await request(`${API_BASE}/label/reprint/${latestLabel._id}`, {
+                method: "POST",
+                body: JSON.stringify({
+                    qty: Number(reprintItem.printQty || 1),
+                    copies: 1,
+                    printer: appSettings.labelPrinter || "Zebra ZD230",
+                    labelSize: appSettings.labelSize || "50x25",
+                    mrp: Number(reprintItem.mrp || 0),
+                    saleRate: Number(reprintItem.saleRate || 0),
+                    markupPercent: Number(reprintItem.per || 0),
+                    gstPercent: 0,
+                }),
+            });
+
+            setError("");
+            notifySuccess("Label reprinted successfully.");
+            handleCloseQuickPrint();
+            await loadBills(selectedBill._id, hasSearched);
+        } catch (err) {
+            console.error(err);
+            setError(err.message || "Failed to reprint label.");
+            notifyError(err.message || "Failed to reprint label.");
+        } finally {
+            setQuickPrinting(false);
+        }
+    };
+
     const handleQuickPrint = async () => {
         if (!selectedBill?._id || !quickPrintItem) {
             return;
         }
 
-        const qty = Math.max(Number(quickPrintQty || 0), 1);
+        if (getRemainingLabelCount(quickPrintItem) <= 0) {
+            await reprintItemDirectly(quickPrintItem, quickPrintQty);
+            return;
+        }
+
+        const remainingQty = Math.max(getRemainingLabelCount(quickPrintItem), 1);
+        const qty = Math.min(Math.max(Number(quickPrintQty || 1), 1), remainingQty);
         const printItem = createPrintableItem(
             quickPrintItem,
             qty,
@@ -586,8 +773,13 @@ const ManageReceive = () => {
         }
 
         const itemsToPrint = selectedBillItems.map((item, index) =>
-            createPrintableItem(item, Math.max(Number(item.qty || 1), 1), `${selectedBill._id}-${index}`),
-        );
+            createPrintableItem(item, getRemainingLabelCount(item), `${selectedBill._id}-${index}`),
+        ).filter((item) => Number(item.printQty || 0) > 0);
+        if (itemsToPrint.length === 0) {
+            setError("All labels for this bill are already printed.");
+            notifyInfo("All labels for this bill are already printed.");
+            return;
+        }
 
         await printItemsDirectly(itemsToPrint);
     };
@@ -972,22 +1164,24 @@ const ManageReceive = () => {
                             <div className="datatable-toolbar-start">
                                 <label className="datatable-length">
                                     <span>Show</span>
-                                    <select className="form-select form-select-sm datatable-page-size" aria-label="Rows per page" defaultValue="10">
-                                        <option value="10">10</option>
-                                        <option value="25">25</option>
-                                        <option value="50">50</option>
+                                    <select className="form-select form-select-sm datatable-page-size" aria-label="Rows per page" value={billPageSize} onChange={(event) => setBillPageSize(Number(event.target.value))}>
+                                        <option value={10}>10</option>
+                                        <option value={25}>25</option>
+                                        <option value={50}>50</option>
                                     </select>
                                 </label>
                                 <button className="btn btn_style datatable-create" type="button" onClick={handleNewBill}><i className="bx bx-plus"></i><span>Create Receive</span></button>
                             </div>
                             <div className="datatable-toolbar-end">
                                 <div className="datatable-search">
-                                    <input type="text" placeholder="Search Receive Queue" aria-label="Search Receive Queue" value={filters.grn} onChange={(event) => setFilters((current) => ({ ...current, grn: event.target.value }))} />
+                                    <input type="text" placeholder="Search Receive Queue" aria-label="Search Receive Queue" value={queueSearch} onChange={(event) => setQueueSearch(event.target.value)} />
                                 </div>
-                                <select className="form-select datatable-status-filter" aria-label="Filter status" defaultValue="Invoice Status">
-                                    <option>Invoice Status</option>
-                                    <option>Pending</option>
-                                    <option>Received</option>
+                                <select className="form-select datatable-status-filter" aria-label="Filter status" value={billStatusFilter} onChange={(event) => setBillStatusFilter(event.target.value)}>
+                                    <option value="">All Status</option>
+                                    <option value="Pending">Pending Receive</option>
+                                    <option value="Received">Received</option>
+                                    <option value="Labels Pending">Labels Pending</option>
+                                    <option value="Labels Printed">Labels Printed</option>
                                 </select>
                             </div>
                         </div>
@@ -997,7 +1191,7 @@ const ManageReceive = () => {
                                     <tr><th>GRN</th><th>Bill No</th><th>Bill Date</th><th>Party</th><th>Supplier</th><th>LR No</th><th>Items</th><th>Receive</th><th>Labels</th><th className="text-end">Actions</th></tr>
                                 </thead>
                                 <tbody>
-                                    {visibleBills.length > 0 ? visibleBills.map((bill) => (
+                                    {pagedBills.length > 0 ? pagedBills.map((bill) => (
                                         <tr key={bill._id} className={bill._id === selectedBillId ? "manage-receive__table-row--active" : undefined} onClick={() => handleSelectBill(bill)} onDoubleClick={() => handleOpenBillModal(bill)}>
                                             <td>{getDisplayText(bill.grnNo, "-")}</td>
                                             <td>{getDisplayText(bill.billNo, "-")}</td>
@@ -1007,7 +1201,7 @@ const ManageReceive = () => {
                                             <td>{getDisplayText(bill.lrNo, "-")}</td>
                                             <td>{bill.items?.length || 0}</td>
                                             <td><span className={`status-badge ${bill.received ? "status-success" : "status-warning"}`}>{bill.received ? "Received" : "Pending"}</span></td>
-                                            <td><span className={`status-badge ${bill.labelsPrinted ? "status-primary" : "status-warning"}`}>{bill.labelsPrinted ? "Printed" : "Pending"}</span></td>
+                                            <td><span className={`status-badge ${getBillPendingLabelCount(bill) <= 0 ? "status-primary" : "status-warning"}`}>{getBillPendingLabelCount(bill) <= 0 ? "Printed" : `${getBillPendingLabelCount(bill)} Pending`}</span></td>
                                             <td className="text-end">
                                                 <div className="dropdown">
                                                     <button type="button" className="btn action-btn dropdown-toggle hide-arrow" data-bs-toggle="dropdown" aria-label="Actions">
@@ -1040,22 +1234,22 @@ const ManageReceive = () => {
                             <div className="datatable-toolbar-start">
                                 <label className="datatable-length">
                                     <span>Show</span>
-                                    <select className="form-select form-select-sm datatable-page-size" aria-label="Rows per page" defaultValue="10">
-                                        <option value="10">10</option>
-                                        <option value="25">25</option>
-                                        <option value="50">50</option>
+                                    <select className="form-select form-select-sm datatable-page-size" aria-label="Rows per page" value={itemPageSize} onChange={(event) => setItemPageSize(Number(event.target.value))}>
+                                        <option value={10}>10</option>
+                                        <option value={25}>25</option>
+                                        <option value={50}>50</option>
                                     </select>
                                 </label>
                                 <button className="btn btn_style datatable-create" type="button" onClick={handleAddItemModal}><i className="bx bx-plus"></i><span>Create Receive Items</span></button>
                             </div>
                             <div className="datatable-toolbar-end">
                                 <div className="datatable-search">
-                                    <input type="text" placeholder="Search Receive Items" aria-label="Search Receive Items" value={filters.itemName} onChange={(event) => setFilters((current) => ({ ...current, itemName: event.target.value }))} />
+                                    <input type="text" placeholder="Search Receive Items" aria-label="Search Receive Items" value={itemTableSearch} onChange={(event) => setItemTableSearch(event.target.value)} />
                                 </div>
-                                <select className="form-select datatable-status-filter" aria-label="Filter status" defaultValue="Invoice Status">
-                                    <option>Invoice Status</option>
-                                    <option>Pending</option>
-                                    <option>Received</option>
+                                <select className="form-select datatable-status-filter" aria-label="Filter status" value={itemStatusFilter} onChange={(event) => setItemStatusFilter(event.target.value)}>
+                                    <option value="">All Labels</option>
+                                    <option value="Pending Labels">Pending Labels</option>
+                                    <option value="Labels Printed">Labels Printed</option>
                                 </select>
                             </div>
                         </div>
@@ -1065,8 +1259,8 @@ const ManageReceive = () => {
                                     <tr><th>BarCode</th><th>Category</th><th>Brand</th><th>Item Name</th><th>Pur.Rate</th><th>MRP</th><th>Sale Rate</th><th>P.Qty</th><th>On Hand</th><th className="text-end">Actions</th></tr>
                                 </thead>
                                 <tbody>
-                                    {selectedBill ? selectedBillItems.map((item, index) => (
-                                        <tr key={item.id || `${selectedBill._id}-${index}`} className={index === selectedItemIndex ? "manage-receive__table-row--active" : undefined} onClick={() => setSelectedItemIndex(index)} onDoubleClick={() => handleOpenItemModal(item)}>
+                                    {selectedBill && visibleSelectedBillItems.length > 0 ? visibleSelectedBillItems.map((item, index) => (
+                                        <tr key={item.id || `${selectedBill._id}-${index}`} className={item.originalIndex === selectedItemIndex ? "manage-receive__table-row--active" : undefined} onClick={() => setSelectedItemIndex(item.originalIndex)} onDoubleClick={() => handleOpenItemModal(item)}>
                                             <td>{getDisplayText(item.barcode, "-")}</td>
                                             <td>{getDisplayText(item.category, "-")}</td>
                                             <td>{getDisplayText(item.brand, "-")}</td>
@@ -1082,7 +1276,7 @@ const ManageReceive = () => {
                                                     <div className="dropdown-menu dropdown-menu-end">
                                                         <button className="dropdown-item" type="button" onClick={() => handleOpenItemModal(item)}><i className="bx bx-show me-2"></i>View</button>
                                                         <button className="dropdown-item" type="button" onClick={() => handleOpenItemModal(item)}><i className="bx bx-edit-alt me-2"></i>Edit</button>
-                                                        <button className="dropdown-item" type="button" onClick={() => handleOpenQuickPrintForItem(item, index)}><i className="bx bx-printer me-2"></i>Print Labels</button>
+                                                        <button className="dropdown-item" type="button" onClick={() => handleOpenQuickPrintForItem(item, item.originalIndex)}><i className="bx bx-printer me-2"></i>{getRemainingLabelCount(item) <= 0 ? "Reprint Label" : "Print Labels"}</button>
                                                     </div>
                                                 </div>
                                             </td>
@@ -1090,7 +1284,11 @@ const ManageReceive = () => {
                                     )) : (
                                         <tr>
                                             <td colSpan="10" className="text-center text-muted py-4">
-                                                {hasSearched ? "Select a bill to view items." : "Search for bills first. The first result will become active automatically."}
+                                                {selectedBill
+                                                    ? "No items matched the current item filters."
+                                                    : hasSearched
+                                                        ? "Select a bill to view items."
+                                                        : "Search for bills first. The first result will become active automatically."}
                                             </td>
                                         </tr>
                                     )}
@@ -1100,8 +1298,8 @@ const ManageReceive = () => {
                         <div className="row gx-2 mt-3">
                             <div className="col-auto"><button className="btn btn_style" type="button" onClick={() => selectedBill && handleOpenBillModal(selectedBill)} disabled={!selectedBill}>Update Bill</button></div>
                             <div className="col-auto"><button className="btn btn_style inActive" type="button" disabled>Edit History</button></div>
-                            <div className="col-auto"><button className="btn btn_style" type="button" onClick={handleOpenQuickPrint} disabled={!selectedBill || !selectedItem}>Print Labels</button></div>
-                            <div className="col-auto"><button className="btn btn_style inActive" type="button" onClick={handleQuickPrintAll} disabled={!selectedBill}>Print All Label</button></div>
+                            <div className="col-auto"><button className="btn btn_style" type="button" onClick={handleOpenQuickPrint} disabled={!selectedBill || !selectedItem}>{selectedItem && getRemainingLabelCount(selectedItem) <= 0 ? "Reprint Label" : "Print Labels"}</button></div>
+                            <div className="col-auto"><button className="btn btn_style inActive" type="button" onClick={handleQuickPrintAll} disabled={!selectedBill || getBillPendingLabelCount(selectedBill) <= 0}>Print All Label</button></div>
                             <div className="col-auto"><button className="btn btn_style inActive" type="button" onClick={handleClearSearch}>Exit</button></div>
                         </div>
                     </div>
@@ -1146,7 +1344,6 @@ const ManageReceive = () => {
                                                 <BootstrapInput id="receive-transport-0" label="Transport" value={draft.transporter} onChange={(value) => updateDraftField("transporter", value)} />
                                                 <BootstrapInput id="receive-transport-1" label="LR No." value={draft.lrNo} onChange={(value) => updateDraftField("lrNo", value)} />
                                                 <BootstrapInput id="receive-transport-2" label="Bale" type="number" colClassName="col-12 col-md-6 col-xl-2" value={draft.bale} onChange={(value) => updateDraftField("bale", value)} />
-                                                <BootstrapInput id="receive-transport-3" label="Transporter Name" colClassName="col-12 col-md-6 col-xl-4" value={draft.transporter} onChange={(value) => updateDraftField("transporter", value)} />
                                                 <BootstrapInput id="receive-transport-4" label="Charges" type="number" value={draft.transportCharges} onChange={(value) => updateDraftField("transportCharges", value)} />
                                                 <div className="col-12">
                                                     <label className="form-label" htmlFor="receive-narration">Narration</label>
@@ -1259,9 +1456,9 @@ const ManageReceive = () => {
                                                 <BootstrapInput id="item-receive-3" label="Stock-in-hand" colClassName="col-6 col-md-4 col-xl-4" value={Number(itemDraft.stockOnHand || 0)} readOnly />
                                                 <BootstrapInput id="item-receive-4" label="Before" colClassName="col-6 col-md-4 col-xl-4" value={Number(itemDraft.stockOnHand || 0)} readOnly />
                                                 <BootstrapInput id="item-receive-5" label="After" colClassName="col-6 col-md-4 col-xl-4" value={itemDraft.received ? Number(itemDraft.stockOnHand || 0) : Number(itemDraft.stockOnHand || 0) + Number(itemDraft.qty || 0)} readOnly />
-                                                <BootstrapInput id="item-receive-6" label="Def.Qty" colClassName="col-6 col-md-4 col-xl-4" value="" readOnly />
-                                                <BootstrapInput id="item-receive-7" label="SL Commission" colClassName="col-6 col-md-4 col-xl-4" value={0.5} readOnly />
-                                                <BootstrapInput id="item-receive-8" label="Per%" colClassName="col-6 col-md-4 col-xl-4" value={0} readOnly />
+                                                <BootstrapInput id="item-receive-6" label="Qty On Label" colClassName="col-6 col-md-4 col-xl-4" value={getReceivingQtyForLabel(itemDraft)} readOnly />
+                                                <BootstrapInput id="item-receive-7" label="Printed Labels" colClassName="col-6 col-md-4 col-xl-4" value={Number(itemDraft.printedLabels || 0)} readOnly />
+                                                <BootstrapInput id="item-receive-8" label="Pending Labels" colClassName="col-6 col-md-4 col-xl-4" value={getRemainingLabelCount(itemDraft)} readOnly />
                                             </div>
                                         </section>
 
@@ -1312,26 +1509,39 @@ const ManageReceive = () => {
                                 <span>Stock On Hand</span>
                                 <strong>{Number(quickPrintItem?.stockOnHand || 0)}</strong>
                             </div>
+                            <div className="manage-receive__quick-print-meta">
+                                <span>{getRemainingLabelCount(quickPrintItem) <= 0 ? "Reprint Labels" : "Labels To Print"}</span>
+                                <strong>{getRemainingLabelCount(quickPrintItem) <= 0 ? Math.max(getLabelTargetForItem(quickPrintItem), 1) : getRemainingLabelCount(quickPrintItem)}</strong>
+                            </div>
                             <label className="manage-receive__input-block">
-                                <span className="manage-receive__form-label manage-receive__form-label--compact">Label Qty</span>
+                                <span className="manage-receive__form-label manage-receive__form-label--compact">
+                                    {getRemainingLabelCount(quickPrintItem) <= 0 ? "Reprint Qty" : "Print Qty"}
+                                </span>
                                 <input
                                     ref={quickPrintInputRef}
                                     type="text"
-                                    inputMode="decimal"
+                                    inputMode="numeric"
                                     min="1"
                                     value={quickPrintQty}
-                                    onChange={(e) => setQuickPrintQty(e.target.value)}
+                                    onChange={(event) => {
+                                        const value = event.target.value.replace(/\D/g, "");
+                                        setQuickPrintQty(value);
+                                    }}
                                     onKeyDown={handleAdvanceOnEnter}
                                     className="manage-receive__form-input"
                                 />
                             </label>
+                            <div className="manage-receive__quick-print-meta">
+                                <span>Qty On Label</span>
+                                <strong>{getReceivingQtyForLabel(quickPrintItem)} {quickPrintItem?.unit || "PC"}</strong>
+                            </div>
                         </div>
                         <div className="manage-receive__modal-footer">
                             <button type="button" onClick={handleCloseQuickPrint} className="manage-receive__secondary-btn" disabled={quickPrinting}>
                                 Cancel
                             </button>
                             <button type="button" onClick={handleQuickPrint} className="manage-receive__primary-btn" disabled={quickPrinting}>
-                                {quickPrinting ? "Printing..." : "Print"}
+                                {quickPrinting ? "Printing..." : getRemainingLabelCount(quickPrintItem) <= 0 ? "Reprint" : "Print"}
                             </button>
                         </div>
                     </div>

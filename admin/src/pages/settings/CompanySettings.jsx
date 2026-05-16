@@ -78,6 +78,10 @@ const CompanySettings = () => {
             <SettingsCard title="Identity" description="These values feed branding, print headers, and barcode defaults throughout the workspace.">
                 <div className="row g-3">
                     <SettingsField label="Company Name" value={settings.companyName} onChange={(value) => update("companyName", value)} />
+                    <SettingsField label="Tagline" value={settings.companyTagline} onChange={(value) => update("companyTagline", value)} />
+                    <SettingsField label="Address" value={settings.companyAddress} onChange={(value) => update("companyAddress", value)} />
+                    <SettingsField label="Phone" value={settings.companyPhone} onChange={(value) => update("companyPhone", value)} />
+                    <SettingsField label="GSTIN" value={settings.gstin} onChange={(value) => update("gstin", value)} />
                     <SettingsField label="Billing Counter" value={settings.billingCounter} onChange={(value) => update("billingCounter", value)} />
                     <SettingsField label="Company Acronym" value={companyAcronym} readOnly />
                     <SettingsField label="Default Barcode Format" value={settings.barcodeFormat} readOnly />

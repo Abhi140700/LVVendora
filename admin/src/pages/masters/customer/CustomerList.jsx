@@ -16,6 +16,11 @@ const emptyForm = {
   name: "",
   phone: "",
   email: "",
+  customerType: "retail",
+  creditLimit: "",
+  segmentTags: "",
+  loyaltyCardNo: "",
+  applyLoyalty: false,
   city: "",
   state: "",
   gstNo: "",
@@ -82,6 +87,8 @@ export default function CustomerList() {
         customer.name,
         customer.phone,
         customer.email,
+        customer.customerType,
+        customer.segmentTags?.join(" "),
         customer.city,
         customer.state,
         customer.gstNo,
@@ -99,7 +106,14 @@ export default function CustomerList() {
       return;
     }
     try {
-      await api.post("/parties", { ...form, name, partyType: "customer" });
+      await api.post("/parties", {
+        ...form,
+        name,
+        creditLimit: Number(form.creditLimit || 0),
+        segmentTags: String(form.segmentTags || "").split(",").map((tag) => tag.trim()).filter(Boolean),
+        applyLoyalty: Boolean(form.applyLoyalty),
+        partyType: "customer",
+      });
       setForm(emptyForm);
       notifySuccess("Customer created successfully");
       await loadData();
@@ -110,10 +124,10 @@ export default function CustomerList() {
 
   const exportCsv = () => {
     const rows = [
-      ["Customer", "Phone", "Email", "Location", "Orders", "Total Spent"],
+      ["Customer", "Phone", "Email", "Type", "Credit Limit", "Segments", "Location", "Orders", "Total Spent"],
       ...filteredCustomers.map((customer) => {
         const stats = getCustomerStats(customer);
-        return [customer.name || "", customer.phone || "", customer.email || "", customerLocation(customer), stats.orders, stats.spent];
+        return [customer.name || "", customer.phone || "", customer.email || "", customer.customerType || "retail", customer.creditLimit || 0, (customer.segmentTags || []).join(", "), customerLocation(customer), stats.orders, stats.spent];
       }),
     ];
     const csv = rows.map((row) => row.map((cell) => `"${String(cell).replace(/"/g, '""')}"`).join(",")).join("\n");
@@ -176,6 +190,8 @@ export default function CustomerList() {
                   <th className="datatable-check-cell"><input className="form-check-input" type="checkbox" aria-label="Select all customers" /></th>
                   <th>Customer</th>
                   <th>Customer ID</th>
+                  <th>Type</th>
+                  <th>Credit Limit</th>
                   <th>Country</th>
                   <th>Order</th>
                   <th>Total Spent</th>
@@ -195,13 +211,15 @@ export default function CustomerList() {
                         </Link>
                       </td>
                       <td><Link className="customer-id-link" to={overviewPath}>{customerCode(customer)}</Link></td>
+                      <td><span className="status-badge status-primary">{customer.customerType || "retail"}</span></td>
+                      <td>{money(customer.creditLimit || 0)}</td>
                       <td><span className="country-dot">{locationCode(customer)}</span>{customerLocation(customer)}</td>
                       <td>{stats.orders}</td>
                       <td><strong>{money(stats.spent)}</strong></td>
                     </tr>
                   );
                 }) : (
-                  <tr><td colSpan="6" className="text-center text-muted py-4">{loading ? "Loading customers..." : "No customers found."}</td></tr>
+                  <tr><td colSpan="8" className="text-center text-muted py-4">{loading ? "Loading customers..." : "No customers found."}</td></tr>
                 )}
               </tbody>
             </table>
@@ -231,6 +249,11 @@ export default function CustomerList() {
                 <div className="col-12"><label className="form-label">Name</label><input className="form-control" value={form.name} onChange={(event) => setForm((current) => ({ ...current, name: event.target.value }))} /></div>
                 <div className="col-12 col-md-6"><label className="form-label">Phone</label><input className="form-control" value={form.phone} onChange={(event) => setForm((current) => ({ ...current, phone: event.target.value }))} /></div>
                 <div className="col-12 col-md-6"><label className="form-label">Email</label><input className="form-control" type="email" value={form.email} onChange={(event) => setForm((current) => ({ ...current, email: event.target.value }))} /></div>
+                <div className="col-12 col-md-6"><label className="form-label">Customer Type</label><select className="form-select" value={form.customerType} onChange={(event) => setForm((current) => ({ ...current, customerType: event.target.value }))}><option value="retail">Retail</option><option value="wholesale">Wholesale</option><option value="vip">VIP</option></select></div>
+                <div className="col-12 col-md-6"><label className="form-label">Credit Limit</label><input className="form-control" type="number" value={form.creditLimit} onChange={(event) => setForm((current) => ({ ...current, creditLimit: event.target.value }))} /></div>
+                <div className="col-12 col-md-6"><label className="form-label">Loyalty Card No</label><input className="form-control" value={form.loyaltyCardNo || (form.applyLoyalty ? "Auto on save" : "")} readOnly placeholder="Auto on apply" /></div>
+                <div className="col-12 col-md-6"><label className="form-label">Apply Loyalty</label><label className="form-check d-flex align-items-center gap-2 mt-2"><input className="form-check-input" type="checkbox" checked={Boolean(form.applyLoyalty)} onChange={(event) => setForm((current) => ({ ...current, applyLoyalty: event.target.checked }))} /><span className="form-check-label">Generate loyalty card on save</span></label></div>
+                <div className="col-12 col-md-6"><label className="form-label">Segments</label><input className="form-control" value={form.segmentTags} onChange={(event) => setForm((current) => ({ ...current, segmentTags: event.target.value }))} placeholder="VIP, Birthday, Wholesale" /></div>
                 <div className="col-12 col-md-6"><label className="form-label">City</label><input className="form-control" value={form.city} onChange={(event) => setForm((current) => ({ ...current, city: event.target.value }))} /></div>
                 <div className="col-12 col-md-6"><label className="form-label">State</label><input className="form-control" value={form.state} onChange={(event) => setForm((current) => ({ ...current, state: event.target.value }))} /></div>
                 <div className="col-12"><label className="form-label">GST No</label><input className="form-control" value={form.gstNo} onChange={(event) => setForm((current) => ({ ...current, gstNo: event.target.value.toUpperCase() }))} /></div>

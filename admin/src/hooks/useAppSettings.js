@@ -20,6 +20,7 @@ const useAppSettings = () => {
                 ...DEFAULT_APP_SETTINGS,
                 ...nextSettings,
                 ui: { ...DEFAULT_APP_SETTINGS.ui, ...(nextSettings.ui || {}) },
+                loyalty: { ...DEFAULT_APP_SETTINGS.loyalty, ...(nextSettings.loyalty || {}) },
                 sales: { ...DEFAULT_APP_SETTINGS.sales, ...(nextSettings.sales || {}) },
                 purchase: { ...DEFAULT_APP_SETTINGS.purchase, ...(nextSettings.purchase || {}) },
             });

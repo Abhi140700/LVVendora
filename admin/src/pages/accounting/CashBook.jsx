@@ -28,6 +28,10 @@ const addDays = (value, days) => {
 const formatDate = (value) => (value ? new Date(value).toLocaleDateString("en-IN") : "-");
 const formatDateTime = (value) => (value ? new Date(value).toLocaleString("en-IN") : "-");
 const formatCurrency = (value) => round2(value).toLocaleString("en-IN", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+const formatMovementType = (value = "") => String(value || "-")
+    .split("-")
+    .map((word) => word ? `${word.charAt(0).toUpperCase()}${word.slice(1)}` : "")
+    .join(" ");
 
 const MAIN_TABS = [
     { id: "summary", label: "Summary" },
@@ -37,6 +41,7 @@ const MAIN_TABS = [
 
 const SIDE_TABS = [
     { id: "sales", label: "Sales" },
+    { id: "credit", label: "Credit" },
     { id: "advMemo", label: "Adv.Memo" },
     { id: "receipt", label: "Receipt" },
 ];
@@ -75,6 +80,12 @@ const CashBook = () => {
     const [sessionForm, setSessionForm] = useState(EMPTY_SESSION_FORM);
     const [dialog, setDialog] = useState("");
     const [didSyncSessionDate, setDidSyncSessionDate] = useState(false);
+    const [transactionSearch, setTransactionSearch] = useState("");
+    const [transactionTypeFilter, setTransactionTypeFilter] = useState("");
+    const [transactionModeFilter, setTransactionModeFilter] = useState("");
+    const [transactionPageSize, setTransactionPageSize] = useState(10);
+    const [selectedTransactionKeys, setSelectedTransactionKeys] = useState([]);
+    const [movementDetail, setMovementDetail] = useState(null);
     const userRole = localStorage.getItem("role") || "guest";
     const canManageSession = hasRole(userRole, ROLE_GROUPS.tallyOps);
     const canUndoDayEnd = userRole === "superadmin";
@@ -169,6 +180,9 @@ const CashBook = () => {
         if (sideTab === "sales") {
             return detailPanels[selectedSummaryKey] || detailPanels["CARD/UPI SALES"] || [];
         }
+        if (sideTab === "credit") {
+            return detailPanels["CREDIT SALES"] || [];
+        }
         if (sideTab === "advMemo") {
             return detailPanels["ADV.MEMO"] || [];
         }
@@ -176,6 +190,64 @@ const CashBook = () => {
     }, [detailPanels, selectedSummaryKey, sideTab]);
 
     const sideTotal = useMemo(() => sideRows.reduce((sum, row) => sum + round2(row.salesAmt ?? row.amount), 0), [sideRows]);
+
+    const getTransactionKey = useCallback((row, index) => `${row.type || "row"}-${row.refNo || "-"}-${row.date || "-"}-${index}`, []);
+
+    const cashMovementRows = useMemo(() => {
+        const sessionRows = sessions.map((session) => ({
+            type: session.status === "closed" ? "day-end" : "pos-session",
+            date: session.lastDayEndAt || session.closedAt || session.openedAt,
+            refNo: session.sessionNo || session._id,
+            party: "POS Session",
+            mode: session.status || "-",
+            amount: round2(session.closingCash || session.expectedCash || session.openingCash || 0),
+            outstanding: 0,
+            cashComponent: 0,
+            session,
+        }));
+        return [...transactions, ...sessionRows]
+            .sort((left, right) => new Date(right.date || 0) - new Date(left.date || 0))
+            .map((row, index) => ({ ...row, rowKey: getTransactionKey(row, index) }));
+    }, [getTransactionKey, sessions, transactions]);
+
+    const filteredTransactions = useMemo(() => cashMovementRows.filter((row) => {
+        const type = String(row.type || "").toLowerCase();
+        const mode = String(row.paymentMode || row.mode || "").toLowerCase();
+        if (transactionTypeFilter === "Sales" && !type.includes("sale")) return false;
+        if (transactionTypeFilter === "Receipt" && type !== "receipt") return false;
+        if (transactionTypeFilter === "Expense" && !["expense", "cash-adjustment", "bank-deposit", "bank-withdrawal", "adjustment"].some((entryType) => type.includes(entryType))) return false;
+        if (transactionTypeFilter === "Day End" && !["day-end", "pos-session"].some((entryType) => type.includes(entryType))) return false;
+
+        if (transactionModeFilter === "Cash" && round2(row.cashComponent) === 0 && mode !== "cash") return false;
+        if (transactionModeFilter === "UPI" && mode !== "upi") return false;
+        if (transactionModeFilter === "Card" && mode !== "card") return false;
+        if (transactionModeFilter === "Credit" && !type.includes("credit")) return false;
+        if (transactionModeFilter === "Advance" && !type.includes("advance")) return false;
+
+        if (transactionSearch) {
+            const haystack = [
+                formatMovementType(row.type),
+                formatDate(row.date),
+                row.refNo,
+                row.party,
+                row.paymentMode || row.mode,
+                row.amount,
+                row.outstanding,
+                row.cashComponent,
+            ].join(" ").toLowerCase();
+            if (!haystack.includes(transactionSearch.toLowerCase())) return false;
+        }
+        return true;
+    }), [cashMovementRows, transactionModeFilter, transactionSearch, transactionTypeFilter]);
+
+    const pagedTransactions = useMemo(
+        () => filteredTransactions.slice(0, transactionPageSize),
+        [filteredTransactions, transactionPageSize],
+    );
+    const selectedTransactionRows = useMemo(
+        () => filteredTransactions.filter((row) => selectedTransactionKeys.includes(row.rowKey)),
+        [filteredTransactions, selectedTransactionKeys],
+    );
 
     const actionSummaryText = useMemo(() => {
         const lines = [
@@ -356,6 +428,27 @@ const CashBook = () => {
     };
 
     const handleExport = () => {
+        const rowsToExport = selectedTransactionRows.length > 0 ? selectedTransactionRows : filteredTransactions;
+        if (rowsToExport.length > 0) {
+            exportRowsAsCsv([
+                ["Type", "Date", "Ref No", "Party", "Mode", "Amount", "Outstanding", "Cash Component"],
+                ...rowsToExport.map((row) => [
+                    formatMovementType(row.type),
+                    formatDate(row.date),
+                    row.refNo || "",
+                    row.party || "",
+                    row.paymentMode || row.mode || "",
+                    round2(row.amount),
+                    round2(row.outstanding),
+                    round2(row.cashComponent),
+                ]),
+            ], `cash-book-movements-${filters.from}-${filters.to}.csv`);
+            const message = selectedTransactionRows.length > 0 ? "Selected cash movements exported." : "Cash movements exported.";
+            notifySuccess(message);
+            setStatusMessage(message);
+            return;
+        }
+
         exportRowsAsCsv([
             ["All", "Cnt", "Cr. (In)", "Dr. (Out)"],
             ...selectedSummaryRows.map((row) => [row.label || "", row.cnt || "", row.cr || "", row.dr || ""]),
@@ -364,6 +457,33 @@ const CashBook = () => {
         notifySuccess(message);
         setStatusMessage(message);
     };
+
+    const toggleTransactionSelection = (rowKey) => {
+        setSelectedTransactionKeys((current) => (
+            current.includes(rowKey)
+                ? current.filter((key) => key !== rowKey)
+                : [...current, rowKey]
+        ));
+    };
+
+    const toggleAllVisibleTransactions = () => {
+        const visibleKeys = pagedTransactions.map((row) => row.rowKey);
+        const allVisibleSelected = visibleKeys.length > 0 && visibleKeys.every((key) => selectedTransactionKeys.includes(key));
+        setSelectedTransactionKeys((current) => (
+            allVisibleSelected
+                ? current.filter((key) => !visibleKeys.includes(key))
+                : Array.from(new Set([...current, ...visibleKeys]))
+        ));
+    };
+
+    const clearSelectedTransactions = () => {
+        setSelectedTransactionKeys([]);
+        setStatusMessage("Cash movement selection cleared.");
+    };
+
+    useEffect(() => {
+        setSelectedTransactionKeys((current) => current.filter((key) => filteredTransactions.some((row) => row.rowKey === key)));
+    }, [filteredTransactions]);
 
     const sendEmail = () => {
         window.location.href = `mailto:?subject=${encodeURIComponent("Cash Book Summary")}&body=${encodeURIComponent(actionSummaryText)}`;
@@ -431,7 +551,7 @@ const CashBook = () => {
                         <div className="card-body"><span className="stat-icon text-primary"><i className="bx bx-wallet"></i></span><span>Opening Cash</span><strong>Rs. {formatCurrency(activeSession?.openingCash || 0)}</strong></div>
                     </div>
                     <div className="card cash-session-card">
-                        <div className="card-body"><span className="stat-icon text-success"><i className="bx bx-trending-up"></i></span><span>Cash In</span><strong>Rs. {formatCurrency(round2(summary.cashSales) + round2(summary.receiptAmount))}</strong></div>
+                        <div className="card-body"><span className="stat-icon text-success"><i className="bx bx-trending-up"></i></span><span>Cash In</span><strong>Rs. {formatCurrency(round2(summary.cashSales) + round2(summary.receiptCash))}</strong></div>
                     </div>
                     <div className="card cash-session-card">
                         <div className="card-body"><span className="stat-icon text-danger"><i className="bx bx-trending-down"></i></span><span>Cash Out</span><strong>Rs. {formatCurrency(summary.expenseAmount)}</strong></div>
@@ -468,23 +588,36 @@ const CashBook = () => {
                                 </div>
                                 <div className="col-12 col-md-3">
                                     <label className="form-label">Counter</label>
-                                    <select className="form-select" defaultValue="Main Counter">
+                                    <select className="form-select" value="Main Counter" disabled>
                                         <option>Main Counter</option>
-                                        <option>Counter 2</option>
                                     </select>
                                 </div>
                                 <div className="col-12 col-md-3">
                                     <label className="form-label">Mode</label>
-                                    <select className="form-select" defaultValue="All Modes">
-                                        <option>All Modes</option>
-                                        <option>Cash</option>
-                                        <option>UPI</option>
-                                        <option>Card</option>
+                                    <select className="form-select" value={transactionModeFilter} onChange={(event) => setTransactionModeFilter(event.target.value)}>
+                                        <option value="">All Modes</option>
+                                        <option value="Cash">Cash</option>
+                                        <option value="UPI">UPI</option>
+                                        <option value="Card">Card</option>
+                                        <option value="Credit">Credit</option>
+                                        <option value="Advance">Advance</option>
                                     </select>
                                 </div>
                                 <div className="col-12 d-flex flex-wrap gap-2">
                                     <button className="btn btn_style" type="button" onClick={applyFilters}><i className="bx bx-search"></i><span>Show</span></button>
-                                    <button className="btn btn_style inActive" type="button" onClick={() => setFilters({ from: today, to: today })}><i className="bx bx-reset"></i><span>Clear</span></button>
+                                    <button
+                                        className="btn btn_style inActive"
+                                        type="button"
+                                        onClick={() => {
+                                            setFilters({ from: today, to: today });
+                                            setTransactionSearch("");
+                                            setTransactionTypeFilter("");
+                                            setTransactionModeFilter("");
+                                            setSelectedTransactionKeys([]);
+                                        }}
+                                    >
+                                        <i className="bx bx-reset"></i><span>Clear</span>
+                                    </button>
                                     <button className="btn btn_style inActive ms-sm-auto" type="button" onClick={() => navigate("/")}><i className="bx bx-log-out"></i><span>Exit</span></button>
                                 </div>
                             </div>
@@ -602,29 +735,28 @@ const CashBook = () => {
                         <div className="datatable-toolbar cashbook-datatable-toolbar">
                             <div className="datatable-toolbar-start">
                                 <label className="datatable-length"><span>Show</span>
-                                    <select className="form-select datatable-page-size" aria-label="Rows per page" defaultValue="10">
-                                        <option>10</option><option>25</option><option>50</option>
+                                    <select className="form-select datatable-page-size" aria-label="Rows per page" value={transactionPageSize} onChange={(event) => setTransactionPageSize(Number(event.target.value))}>
+                                        <option value={10}>10</option><option value={25}>25</option><option value={50}>50</option>
                                     </select>
                                 </label>
                                 <button className="btn btn_style datatable-create" type="button" onClick={handleExport}><i className="bx bx-export"></i><span>Export Cash Book</span></button>
                             </div>
                             <div className="datatable-toolbar-end">
-                                <div className="datatable-search"><input type="search" placeholder="Search Cash Book" aria-label="Search Cash Book" readOnly /></div>
-                                <select className="form-select datatable-status-filter" aria-label="Cash book status" defaultValue="All Status">
-                                    <option>All Status</option><option>Sales</option><option>Receipt</option><option>Expense</option><option>Day End</option>
+                                <div className="datatable-search"><input type="search" placeholder="Search Cash Book" aria-label="Search Cash Book" value={transactionSearch} onChange={(event) => setTransactionSearch(event.target.value)} /></div>
+                                <select className="form-select datatable-status-filter" aria-label="Cash book status" value={transactionTypeFilter} onChange={(event) => setTransactionTypeFilter(event.target.value)}>
+                                    <option value="">All Status</option><option value="Sales">Sales</option><option value="Receipt">Receipt</option><option value="Expense">Expense</option><option value="Day End">Day End</option>
                                 </select>
                             </div>
                         </div>
 
                         <div className="datatable-bulk-bar">
                             <div className="datatable-bulk-copy">
-                                <strong>0 selected</strong>
-                                <span>Choose rows to unlock bulk actions</span>
+                                <strong>{selectedTransactionKeys.length} selected</strong>
+                                <span>{selectedTransactionKeys.length ? "Selection ready for export or clearing" : "Choose rows to unlock bulk actions"}</span>
                             </div>
                             <div className="datatable-bulk-actions">
-                                <button className="btn btn_style inActive" type="button"><i className="bx bx-archive"></i><span>Archive</span></button>
-                                <button className="btn btn_style inActive" type="button" onClick={handleExport}><i className="bx bx-export"></i><span>Export</span></button>
-                                <button className="btn btn_style inActive" type="button"><i className="bx bx-trash"></i><span>Delete</span></button>
+                                <button className="btn btn_style inActive" type="button" onClick={clearSelectedTransactions} disabled={!selectedTransactionKeys.length}><i className="bx bx-x"></i><span>Clear</span></button>
+                                <button className="btn btn_style inActive" type="button" onClick={handleExport} disabled={!selectedTransactionKeys.length}><i className="bx bx-export"></i><span>Export Selected</span></button>
                             </div>
                         </div>
 
@@ -632,25 +764,26 @@ const CashBook = () => {
                             <table className="table app-table align-middle">
                                 <thead>
                                     <tr>
-                                        <th className="datatable-check-cell"><input className="form-check-input datatable-select-all" type="checkbox" aria-label="Select all cash book rows" /></th>
-                                        <th>Type</th><th>Date</th><th>Ref No</th><th>Party</th><th>Mode</th><th className="text-end">Amount</th><th className="text-end">Cash Component</th><th className="text-end">Actions</th>
+                                        <th className="datatable-check-cell"><input className="form-check-input datatable-select-all" type="checkbox" aria-label="Select all cash book rows" checked={pagedTransactions.length > 0 && pagedTransactions.every((row) => selectedTransactionKeys.includes(row.rowKey))} onChange={toggleAllVisibleTransactions} /></th>
+                                        <th>Type</th><th>Date</th><th>Ref No</th><th>Party</th><th>Mode</th><th className="text-end">Amount</th><th className="text-end">Outstanding</th><th className="text-end">Cash Component</th><th className="text-end">Actions</th>
                                     </tr>
                                 </thead>
                                 <tbody>
-                                    {transactions.length > 0 ? transactions.map((row, index) => (
-                                        <tr key={`${row.type}-${row.refNo}-${row.date}-${index}`}>
-                                            <td className="datatable-check-cell"><input className="form-check-input datatable-row-check" type="checkbox" aria-label="Select cash book row" /></td>
-                                            <td>{String(row.type || "-").replace(/-/g, " ")}</td>
+                                    {pagedTransactions.length > 0 ? pagedTransactions.map((row, index) => (
+                                        <tr key={row.rowKey}>
+                                            <td className="datatable-check-cell"><input className="form-check-input datatable-row-check" type="checkbox" aria-label="Select cash book row" checked={selectedTransactionKeys.includes(row.rowKey)} onChange={() => toggleTransactionSelection(row.rowKey)} /></td>
+                                            <td>{formatMovementType(row.type)}</td>
                                             <td>{formatDate(row.date)}</td>
                                             <td>{row.refNo || "-"}</td>
                                             <td>{row.party || "-"}</td>
                                             <td>{row.paymentMode || row.mode || "-"}</td>
                                             <td className="text-end">{formatCurrency(row.amount)}</td>
+                                            <td className="text-end">{row.outstanding ? formatCurrency(row.outstanding) : "-"}</td>
                                             <td className="text-end">{formatCurrency(row.cashComponent)}</td>
-                                            <td className="text-end"><div className="datatable-actions"><button className="action-btn" type="button" aria-label="View"><i className="bx bx-show"></i></button><button className="action-btn" type="button" aria-label="More"><i className="bx bx-dots-vertical-rounded"></i></button></div></td>
+                                            <td className="text-end"><div className="datatable-actions"><button className="action-btn" type="button" aria-label="View" onClick={() => setMovementDetail(row)}><i className="bx bx-show"></i></button><button className="action-btn" type="button" aria-label="More" onClick={() => setMovementDetail(row)}><i className="bx bx-dots-vertical-rounded"></i></button></div></td>
                                         </tr>
                                     )) : (
-                                        <tr><td colSpan="9" className="text-center text-muted py-4">No cash movements found.</td></tr>
+                                        <tr><td colSpan="10" className="text-center text-muted py-4">No cash movements found.</td></tr>
                                     )}
                                 </tbody>
                             </table>
@@ -667,7 +800,7 @@ const CashBook = () => {
                         </div>
 
                         <div className="pagination-row">
-                            <span>Showing {transactions.length ? 1 : 0} to {transactions.length} of {transactions.length} entries</span>
+                            <span>Showing {pagedTransactions.length ? 1 : 0} to {pagedTransactions.length} of {filteredTransactions.length} entries</span>
                             <nav aria-label="Cash book pagination">
                                 <ul className="pagination mb-0">
                                     <li className="page-item disabled"><a className="page-link" href="#" aria-label="Previous"><i className="bx bx-chevron-left"></i></a></li>
@@ -725,6 +858,24 @@ const CashBook = () => {
                             <div className="modal-footer"><button type="button" className="btn btn_style inActive" onClick={() => setDialog("")}>Cancel</button><button type="button" className="btn btn_style" onClick={runUndoDayEnd} disabled={saving}>{saving ? "Updating..." : "Confirm Undo"}</button></div>
                         </>
                     ) : null}
+                </ModalShell>
+            ) : null}
+
+            {movementDetail ? (
+                <ModalShell title="Cash Movement Detail" onClose={() => setMovementDetail(null)}>
+                    <div className="modal-body">
+                        <div className="summary-line"><span>Type</span><strong>{formatMovementType(movementDetail.type)}</strong></div>
+                        <div className="summary-line"><span>Date</span><strong>{formatDateTime(movementDetail.date)}</strong></div>
+                        <div className="summary-line"><span>Reference</span><strong>{movementDetail.refNo || "-"}</strong></div>
+                        <div className="summary-line"><span>Party</span><strong>{movementDetail.party || "-"}</strong></div>
+                        <div className="summary-line"><span>Mode</span><strong>{movementDetail.paymentMode || movementDetail.mode || "-"}</strong></div>
+                        <div className="summary-line"><span>Amount</span><strong>Rs. {formatCurrency(movementDetail.amount)}</strong></div>
+                        <div className="summary-line"><span>Outstanding</span><strong>Rs. {formatCurrency(movementDetail.outstanding)}</strong></div>
+                        <div className="summary-line"><span>Cash Component</span><strong>Rs. {formatCurrency(movementDetail.cashComponent)}</strong></div>
+                    </div>
+                    <div className="modal-footer">
+                        <button type="button" className="btn btn_style" onClick={() => setMovementDetail(null)}>Close</button>
+                    </div>
                 </ModalShell>
             ) : null}
         </>

@@ -364,10 +364,21 @@ export const PaymentModal = ({
     lines,
     createPaymentRow,
     setActiveMode,
+    activeMode = "card-upi",
+    billingMode = "CASH",
     paymentRows,
     setPaymentRows,
+    setManualAdvanceAmount,
+    expectedDeliveryDate = "",
+    setExpectedDeliveryDate,
+    creditDueDate = "",
+    setCreditDueDate,
+    onConfirm,
+    saving = false,
 }) => {
     const netReceivable = payableAmount;
+    const allowPartial = activeMode === "advance" || activeMode === "credit";
+    const allowCashEdit = allowPartial;
     const totalPaid = useMemo(() => paymentRows.reduce((sum, row) => sum + clampNumber(row.amount), 0), [paymentRows]);
     const dueAmount = Math.max(0, round2(netReceivable - totalPaid));
 
@@ -376,16 +387,30 @@ export const PaymentModal = ({
             return;
         }
 
-        setPaymentRows((current) => rebalancePaymentRows(
-            current.length > 0 ? current : [createPaymentRow("Cash", netReceivable)],
-            netReceivable,
-            createPaymentRow,
-        ));
-    }, [createPaymentRow, isOpen, netReceivable, setPaymentRows]);
+        setPaymentRows((current) => {
+            if (allowPartial) {
+                return current.length > 0 ? current : [createPaymentRow("Cash", 0)];
+            }
+
+            return rebalancePaymentRows(
+                current.length > 0 ? current : [createPaymentRow("Cash", netReceivable)],
+                netReceivable,
+                createPaymentRow,
+            );
+        });
+    }, [allowPartial, createPaymentRow, isOpen, netReceivable, setPaymentRows]);
 
     useEffect(() => {
-        setActiveMode("card-upi");
-    }, [setActiveMode]);
+        if (!allowPartial) {
+            setActiveMode("card-upi");
+        }
+    }, [allowPartial, setActiveMode]);
+
+    useEffect(() => {
+        if (activeMode === "advance") {
+            setManualAdvanceAmount?.(String(totalPaid || ""));
+        }
+    }, [activeMode, setManualAdvanceAmount, totalPaid]);
 
     const paymentRowMap = useMemo(() => new Map(
         paymentRows.map((row) => [String(row.mode || "").trim().toUpperCase(), row]),
@@ -394,7 +419,7 @@ export const PaymentModal = ({
     const handleMethodAmountChange = useCallback((method, value) => {
         const normalizedMethod = String(method).trim();
         const upperMethod = normalizedMethod.toUpperCase();
-        if (upperMethod === "CASH") {
+        if (upperMethod === "CASH" && !allowCashEdit) {
             return;
         }
 
@@ -409,9 +434,9 @@ export const PaymentModal = ({
                     amount: nextAmount,
                 });
             }
-            return rebalancePaymentRows(nextRows, netReceivable, createPaymentRow);
+            return allowPartial ? nextRows : rebalancePaymentRows(nextRows, netReceivable, createPaymentRow);
         });
-    }, [createPaymentRow, netReceivable, setPaymentRows]);
+    }, [allowCashEdit, allowPartial, createPaymentRow, netReceivable, setPaymentRows]);
 
     const handleMethodReferenceChange = useCallback((method, value) => {
         const normalizedMethod = String(method).trim();
@@ -419,7 +444,7 @@ export const PaymentModal = ({
 
         setPaymentRows((current) => {
             const existing = current.find((row) => String(row.mode || "").trim().toUpperCase() === upperMethod);
-            if (upperMethod === "CASH") {
+            if (upperMethod === "CASH" && !allowCashEdit) {
                 const nextRows = current.map((row) => (
                     String(row.mode || "").trim().toUpperCase() === "CASH" ? { ...row, reference: value } : row
                 ));
@@ -435,22 +460,31 @@ export const PaymentModal = ({
                     reference: value,
                 });
             }
-            return rebalancePaymentRows(nextRows, netReceivable, createPaymentRow);
+            return allowPartial ? nextRows : rebalancePaymentRows(nextRows, netReceivable, createPaymentRow);
         });
-    }, [createPaymentRow, netReceivable, setPaymentRows]);
+    }, [allowCashEdit, allowPartial, createPaymentRow, netReceivable, setPaymentRows]);
 
-    const handlePaymentSelection = useCallback(() => {
-        if (paymentRows.length === 0) {
+    const handlePaymentSelection = useCallback(async () => {
+        if (paymentRows.length === 0 && activeMode !== "credit") {
             toast.error("Add at least one payment row.");
             return;
         }
-        if (round2(totalPaid) !== round2(netReceivable)) {
+        if (!allowPartial && round2(totalPaid) !== round2(netReceivable)) {
             toast.error("Total paid must match the net receivable.");
+            return;
+        }
+        if (activeMode === "advance" && round2(totalPaid) <= 0) {
+            toast.error("Advance received amount is required.");
+            return;
+        }
+
+        if (allowPartial && onConfirm) {
+            await onConfirm();
             return;
         }
 
         onClose();
-    }, [netReceivable, onClose, paymentRows.length, totalPaid]);
+    }, [activeMode, allowPartial, netReceivable, onClose, onConfirm, paymentRows.length, totalPaid]);
 
     useEffect(() => {
         if (!isOpen) {
@@ -488,9 +522,25 @@ export const PaymentModal = ({
                         </div>
                         <div className="modal-body">
                             <div className="pos-receivable-panel mb-3">
-                                <span>Net Receivable :</span>
+                                <span>{billingMode === "CASH" ? "Net Receivable" : "Total Amount"} :</span>
                                 <strong>Rs. {netReceivable.toFixed(2)}</strong>
                             </div>
+                            {activeMode === "advance" ? (
+                                <div className="row g-3 mb-3">
+                                    <div className="col-12 col-md-6">
+                                        <label className="form-label">Expected Delivery Date</label>
+                                        <input className="form-control" type="date" value={expectedDeliveryDate} onChange={(event) => setExpectedDeliveryDate?.(event.target.value)} />
+                                    </div>
+                                </div>
+                            ) : null}
+                            {activeMode === "credit" ? (
+                                <div className="row g-3 mb-3">
+                                    <div className="col-12 col-md-6">
+                                        <label className="form-label">Due Date</label>
+                                        <input className="form-control" type="date" value={creditDueDate} onChange={(event) => setCreditDueDate?.(event.target.value)} />
+                                    </div>
+                                </div>
+                            ) : null}
                             <div className="app-table-wrap">
                                 <table className="table app-table mb-0">
                                     <thead>
@@ -510,9 +560,9 @@ export const PaymentModal = ({
                                                         data-enter-nav="true"
                                                         type="text"
                                                         inputMode="decimal"
-                                                        value={paymentRowMap.get(method.toUpperCase())?.amount ?? (method === "Cash" ? netReceivable : 0)}
+                                                        value={paymentRowMap.get(method.toUpperCase())?.amount ?? (method === "Cash" && !allowPartial ? netReceivable : 0)}
                                                         onChange={(event) => handleMethodAmountChange(method, event.target.value)}
-                                                        readOnly={method === "Cash"}
+                                                        readOnly={method === "Cash" && !allowCashEdit}
                                                     />
                                                 </td>
                                                 <td>
@@ -534,12 +584,20 @@ export const PaymentModal = ({
                                 <strong>Rs. {totalPaid.toFixed(2)}</strong>
                             </div>
                             <div className="summary-line">
-                                <span>Due :</span>
+                                <span>{activeMode === "credit" ? "Credit Balance :" : activeMode === "advance" ? "Balance :" : "Due :"}</span>
                                 <strong>{dueAmount.toFixed(2)}</strong>
                             </div>
                         </div>
                         <div className="modal-footer">
-                            <button type="button" className="btn btn_style" onClick={handlePaymentSelection}>F1 - OK</button>
+                            <button type="button" className="btn btn_style" onClick={handlePaymentSelection} disabled={saving}>
+                                {saving
+                                    ? "Saving..."
+                                    : activeMode === "credit"
+                                        ? "F1 - Complete Credit Bill"
+                                        : activeMode === "advance"
+                                            ? "F1 - Complete Advance Bill"
+                                            : "F1 - OK"}
+                            </button>
                             <button type="button" className="btn btn_style inActive" onClick={onClose}>Esc - Cancel</button>
                             <button type="button" className="btn btn_style inActive">Adjust Debit Note</button>
                             <button type="button" className="btn btn_style inActive">Adjust Credit Note</button>

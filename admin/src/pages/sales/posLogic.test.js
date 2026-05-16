@@ -50,6 +50,21 @@ describe("validateSaleBeforeSave", () => {
             customerName: "Walk-in",
         })).toBe("");
     });
+
+    it("allows advance bills when a partial payment is received", () => {
+        expect(validateSaleBeforeSave({
+            lines: [{ id: "1", lineDiscountPercent: 0 }],
+            stockWarnings: [],
+            discountPercent: 0,
+            permissionRules: { maxBillDiscountPercent: 10 },
+            salesSettings: { paymentRows: [{ mode: "Cash", amount: 250 }] },
+            activeMode: "advance",
+            paidAmount: 250,
+            advanceAmount: 250,
+            payableAmount: 1000,
+            customerName: "Retail Customer",
+        })).toBe("");
+    });
 });
 
 describe("getBillActionGuard", () => {
